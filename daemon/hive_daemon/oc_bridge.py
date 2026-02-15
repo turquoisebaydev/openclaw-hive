@@ -11,8 +11,10 @@ immediately.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+from datetime import datetime, timezone
 
 from hive_daemon.config import OcInstance
 from hive_daemon.envelope import Envelope
@@ -21,6 +23,10 @@ log = logging.getLogger(__name__)
 
 # Agent turns involve LLM processing — allow generous timeout.
 DEFAULT_TIMEOUT = 300
+
+# Hard hint included in injected text so OC reliably loads the hive-member skill.
+# Keep it short: it is paid every injection.
+_HIVE_SKILL_HINT = "Use the hive-member skill for protocol details (esp. hive-cli reply/send)."
 
 # Env vars injected into openclaw subprocess for self-signed cert compat.
 _SUBPROCESS_ENV: dict[str, str] | None = None
@@ -38,7 +44,7 @@ class OcBridge:
     """Bridges hive messages into local OpenClaw instances via CLI.
 
     Runs ``openclaw agent --agent default --message ...`` as an async
-    subprocess for each configured OC instance.  This triggers a real
+    subprocess for each configured OC instance. This triggers a real
     agent turn so the gateway processes the message immediately.
 
     Args:
@@ -58,27 +64,62 @@ class OcBridge:
     def format_event_text(envelope: Envelope, prefix: str = "") -> str:
         """Format envelope into message text with hive metadata.
 
-        Prepends ``[hive:{from}->{to} ch:{ch}]`` and optional prefix to
-        the envelope text.  Appends ``ENVELOPE_JSON:`` with the raw
-        envelope so the receiving OC agent can use ``hive-cli reply``.
-        """
-        import json
+        Prepends ``[hive:{from}->{to} ch:{ch}]`` + a skill hint + optional
+        prefix to the envelope text.
 
+        Appends ``ENVELOPE_JSON:`` with the raw envelope so the receiving OC
+        agent can use ``hive-cli reply``.
+        """
         meta = f"[hive:{envelope.from_}->{envelope.to} ch:{envelope.ch}]"
-        parts = [meta]
+
+        parts: list[str] = [meta]
         if prefix:
             parts.append(prefix)
+        parts.append(_HIVE_SKILL_HINT)
         parts.append(envelope.text)
+
         readable = " ".join(parts)
         envelope_json = json.dumps(envelope.to_json(), separators=(",", ":"))
         return f"{readable}\nENVELOPE_JSON:{envelope_json}"
+
+    @staticmethod
+    def _session_id_for_instance(instance: OcInstance) -> str:
+        """Choose a stable session id for hive injections.
+
+        OpenClaw snapshots eligible skills at session creation time.
+        If hive-member was added after the session existed, injections can
+        land in a stale session where hive-member is missing from
+        <available_skills>.
+
+        To avoid that, we pin to a *daily* session id per instance.
+        """
+        day = datetime.now(timezone.utc).strftime("%Y%m%d")
+        return f"hive-{instance.name}-{day}"
 
     def _build_command(self, instance: OcInstance, text: str) -> list[str]:
         """Build the openclaw CLI command for a given instance."""
         cmd = ["openclaw"]
         if instance.profile:
             cmd.extend(["--profile", instance.profile])
-        cmd.extend(["agent", "--agent", "default", "--message", text])
+
+        session_id = self._session_id_for_instance(instance)
+
+        # Use --json so we can parse & log session/skills diagnostics.
+        # Thinking minimal keeps tool-driving deterministic for protocol glue.
+        cmd.extend(
+            [
+                "agent",
+                "--agent",
+                "default",
+                "--session-id",
+                session_id,
+                "--thinking",
+                "minimal",
+                "--json",
+                "--message",
+                text,
+            ]
+        )
         return cmd
 
     async def inject_event(
@@ -89,7 +130,7 @@ class OcBridge:
         """Inject an agent message into OC instance(s).
 
         Fires off the agent turn as a background task (does not block
-        waiting for the LLM to finish).  The turn runs asynchronously
+        waiting for the LLM to finish). The turn runs asynchronously
         in the gateway.
 
         Args:
@@ -119,10 +160,13 @@ class OcBridge:
     async def _inject_to_instance(self, instance: OcInstance, text: str) -> None:
         """Run the openclaw CLI command for a single instance."""
         cmd = self._build_command(instance, text)
+        session_id = self._session_id_for_instance(instance)
+
         log.info(
-            "injecting agent message to OC instance %r: %s",
+            "injecting agent message to OC instance %r (session=%s): %s",
             instance.name,
-            " ".join(cmd[:4]) + " ...",  # log command prefix only (text may be large)
+            session_id,
+            " ".join(cmd[:6]) + " ...",  # log command prefix only (text may be large)
         )
 
         try:
@@ -142,20 +186,65 @@ class OcBridge:
                 proc.kill()
                 await proc.wait()
                 log.error(
-                    "OC agent injection timed out for instance %r after %ds",
+                    "OC agent injection timed out for instance %r after %ds (session=%s)",
                     instance.name,
                     self._timeout,
+                    session_id,
                 )
                 return
 
-            if proc.returncode == 0:
-                log.info("agent message processed by OC instance %r", instance.name)
-            else:
-                stderr_text = stderr.decode(errors="replace").strip()
-                log.error(
-                    "OC agent injection failed for instance %r (exit %d): %s",
+            stdout_text = stdout.decode(errors="replace").strip()
+            stderr_text = stderr.decode(errors="replace").strip()
+
+            if stderr_text:
+                log.warning(
+                    "OC inject stderr for instance %r (session=%s): %s",
                     instance.name,
+                    session_id,
+                    stderr_text[:800],
+                )
+
+            if proc.returncode == 0:
+                # Parse JSON so we can confirm hive-member is present in the prompt.
+                try:
+                    data = json.loads(stdout_text)
+                    result = data.get("result") or {}
+                    meta = result.get("meta") or {}
+                    agent_meta = meta.get("agentMeta") or {}
+                    sid = agent_meta.get("sessionId")
+
+                    skills_obj = (meta.get("systemPromptReport") or {}).get("skills") or {}
+                    skills_entries = skills_obj.get("entries") or []
+                    skill_names = [e.get("name") for e in skills_entries if isinstance(e, dict)]
+
+                    payloads = result.get("payloads") or []
+                    reply_preview = ""
+                    if payloads and isinstance(payloads[0], dict):
+                        reply_preview = (payloads[0].get("text") or "")[:200]
+
+                    log.info(
+                        "OC inject ok instance=%r session=%s reportedSession=%s skills=%s reply=%r",
+                        instance.name,
+                        session_id,
+                        sid,
+                        ",".join([s for s in skill_names if s]) or "(none)",
+                        reply_preview,
+                    )
+                except Exception as exc:
+                    log.info(
+                        "OC inject ok instance=%r session=%s (stdout not parsed as JSON: %s). stdout=%r",
+                        instance.name,
+                        session_id,
+                        exc,
+                        stdout_text[:500],
+                    )
+            else:
+                log.error(
+                    "OC agent injection failed for instance %r (session=%s) (exit %d). stdout=%r stderr=%r",
+                    instance.name,
+                    session_id,
                     proc.returncode,
+                    stdout_text[:500],
                     stderr_text[:500],
                 )
 
