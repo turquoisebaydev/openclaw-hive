@@ -160,6 +160,7 @@ def setup_router(
     oc_bridge: OcBridge | None = None,
     dispatcher: Dispatcher | None = None,
     corr_store: CorrelationStore | None = None,
+    mqtt_client: aiomqtt.Client | None = None,
 ) -> Router:
     """Create a Router with channel handlers.
 
@@ -172,12 +173,25 @@ def setup_router(
         log.info("received %s message %s from %s: %s",
                  envelope.ch, envelope.id, envelope.from_, envelope.text[:80])
 
+    async def _publish_dispatch_response(envelope: Envelope, result: "DispatchResult") -> None:
+        """Publish a handler's dispatch result back as a response envelope."""
+        if mqtt_client is None:
+            return
+        from hive_daemon.envelope import create_reply
+        text = result.stdout.strip() if result.success else f"FAILED (exit {result.exit_code}): {result.stderr.strip()}"
+        reply = create_reply(envelope, from_=config.node_id, text=text)
+        topic = f"{config.topic_prefix}/{envelope.from_}/response"
+        payload = json.dumps(reply.to_json())
+        await mqtt_client.publish(topic, payload)
+        log.info("published dispatch response %s -> %s", reply.id, topic)
+
     # --- command channel -> dispatcher (if handler exists) then OC bridge ---
     if dispatcher is not None or oc_bridge is not None:
         async def _command_handler(envelope: Envelope) -> None:
             if dispatcher is not None and envelope.action and dispatcher.has_handler(envelope.action):
                 log.info("dispatching command action %r from %s", envelope.action, envelope.id)
-                await dispatcher.dispatch(envelope)
+                result = await dispatcher.dispatch(envelope)
+                await _publish_dispatch_response(envelope, result)
             elif oc_bridge is not None:
                 log.info("routing command %s to OC bridge", envelope.id)
                 await oc_bridge.inject_envelope(envelope)
@@ -201,7 +215,8 @@ def setup_router(
         async def _sync_handler(envelope: Envelope) -> None:
             if dispatcher is not None and envelope.action and dispatcher.has_handler(envelope.action):
                 log.info("dispatching sync action %r from %s", envelope.action, envelope.id)
-                await dispatcher.dispatch(envelope)
+                result = await dispatcher.dispatch(envelope)
+                await _publish_dispatch_response(envelope, result)
             elif oc_bridge is not None:
                 log.info("no handler for sync %s, falling back to OC bridge", envelope.id)
                 await oc_bridge.inject_envelope(envelope)
@@ -305,6 +320,7 @@ async def run_daemon(config: HiveConfig) -> None:
                     oc_bridge=oc_bridge,
                     dispatcher=dispatcher,
                     corr_store=corr_store,
+                    mqtt_client=client,
                 )
 
                 heartbeat_mgr.start()
