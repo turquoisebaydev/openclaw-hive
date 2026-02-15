@@ -21,10 +21,11 @@ YOU  →  hive-cli reply/send  →  MQTT  →  their hive-daemon  →  system ev
 - You never touch MQTT directly — `hive-cli` handles all protocol details
 - The hive-daemon runs alongside you on this box, handling heartbeats and deterministic tasks
 - You only get woken up for things that need LLM judgment
+- **Deterministic handlers** (git-sync, ping, health-check) run in the daemon without waking you
 
 ## hive-cli Commands
 
-The CLI lives at `cli/.venv/bin/hive-cli` in the openclaw-hive directory. Always pass `--config <path-to-hive.toml>`.
+The CLI reads config from `hive.toml`. Always pass `--config <path-to-hive.toml>`.
 
 ### Send a message (fire-and-forget)
 ```bash
@@ -33,32 +34,36 @@ hive-cli --config /path/to/hive.toml send \
   --ch <channel> \
   --text "your message" \
   [--action <handler-name>] \
-  [--urgency now|later] \
-  [--ttl <seconds>]
+  [--urgency now|later]
 ```
+
+**Fire-and-forget is the default and preferred pattern.** Use this for:
+- Tasks where you don't need the result back immediately
+- Deterministic actions (git-sync, ping) where the daemon handles it
+- Commands where the remote node will notify Hugh directly if needed
 
 ### Send and wait for response (synchronous)
 ```bash
 hive-cli --config /path/to/hive.toml send \
   --to pg1 \
   --ch command \
-  --text "check disk usage" \
-  --wait 60
+  --action ping \
+  --text "health check" \
+  --wait 30
 ```
-Blocks up to 60 seconds. Prints the full response envelope JSON when the correlated reply arrives. Exits 1 on timeout. **Use this when you need the answer back in the same tool call.**
+Blocks up to N seconds. Prints the response envelope JSON when a correlated reply arrives. Exits 1 on timeout.
 
-### Reply to a message
-When you receive a hive command and need to respond, use reply with the original envelope:
+**Use `--wait` ONLY when you need the answer in the same tool call** — e.g. checking disk space before deciding what to do next. For most tasks, fire-and-forget is better.
+
+### Reply to a hive command
+When you receive a hive command via system event, reply with:
 ```bash
 hive-cli --config /path/to/hive.toml reply \
   --to-msg '<original-envelope-json>' \
   --text "your response"
 ```
 
-The reply automatically:
-- Sets `ch` to `response`
-- Copies the `corr` (correlation ID) from the original
-- Sets `replyTo` to the original message's `id`
+The reply automatically sets `ch: response`, copies the correlation ID, and sets `replyTo`. **Only reply when the sender needs information back.** If you were told to "do X", just do it — don't reply unless results were requested.
 
 ### Check cluster status
 ```bash
@@ -70,99 +75,72 @@ hive-cli --config /path/to/hive.toml status
 hive-cli --config /path/to/hive.toml roster
 ```
 
-## Message Envelope
-
-Every hive message is wrapped in an envelope with these fields:
-
-| Field | Type | Required | Purpose |
-|-------|------|----------|---------|
-| `v` | int | yes | Schema version (currently `1`) |
-| `id` | string | yes | Unique message UUID |
-| `ts` | int | yes | Unix epoch seconds when sent |
-| `from` | string | yes | Sender node ID (e.g. `turq`, `pg1`) |
-| `to` | string | yes | Target node ID, or `all` for broadcast |
-| `ch` | string | yes | Logical channel (see below) |
-| `urgency` | string | yes | `now` (wake agent immediately) or `later` (can wait) |
-| `text` | string | yes | Payload — natural language or structured content |
-| `corr` | string | no | Correlation ID linking request ↔ response |
-| `replyTo` | string | no | The `id` of the message being replied to |
-| `ttl` | int | no | Seconds until message expires |
-| `action` | string | no | Handler name for deterministic dispatch (e.g. `git-sync`) |
-
 ## Channels
 
-| Channel | Purpose | You'll see it? | How to respond |
-|---------|---------|----------------|----------------|
-| `command` | "Do something" — tasks, requests, queries | **Yes** | Do the work, then `hive-cli reply` |
-| `response` | Reply to a command (carries `corr` + `replyTo`) | **Yes** (if you sent the original) | Usually just consume it |
-| `alert` | Urgent escalation ("disk full", "job failed 3x") | **Yes** (always, marked URGENT) | Triage and act or notify Hugh |
-| `sync` | File/memory sync notifications | **Rarely** (only on failure) | The daemon handles these |
-| `status` | Node state changes ("going down", "back online") | **Sometimes** | Acknowledge if needed |
-| `heartbeat` | Node aliveness pings (5s interval) | **Never** | Daemon handles this entirely |
+| Channel | Purpose | When you see it | Should you respond? |
+|---------|---------|-----------------|---------------------|
+| `command` | Tasks/requests | **Yes** — if it needs LLM judgment | Only if results were requested |
+| `command` + `action` | Deterministic tasks (git-sync etc.) | **Rarely** — only on handler failure | Investigate the failure |
+| `response` | Reply to something you sent | **Yes** | No — just consume it |
+| `alert` | Urgent escalation | **Yes** (marked URGENT) | Triage + act or notify Hugh |
+| `sync` + `action` | File/memory sync | **Rarely** — only on failure | Investigate the failure |
+| `status` | Node state changes | **Sometimes** | Usually no |
+| `heartbeat` | Aliveness pings (5s) | **Never** | Never — daemon handles this |
 
-## Correlation IDs — Request/Response Tracking
+## When to Reply vs Fire-and-Forget
 
-When a command expects a response, it includes a `corr` (correlation ID). Your reply must carry the same `corr` so the sender can match it.
+**Reply when:**
+- The sender explicitly asked for information ("report disk usage", "what's the status of X")
+- You're responding to a `--wait` synchronous request (the sender is blocking)
+- A task failed and the sender needs to know
 
-**Flow:**
-1. Sender sends: `{ "id": "msg-123", "corr": "task-abc", "ch": "command", "text": "..." }`
-2. You receive it as a system event with the metadata
-3. You do the work
-4. You reply: `hive-cli reply --to-msg '<envelope>' --text "done"` → auto-sets `corr: "task-abc"`, `replyTo: "msg-123"`
-
-If there's no `corr` in the original, `reply` uses the original `id` as the correlation ID.
-
-**You don't need to generate correlation IDs yourself** — `hive-cli` handles it.
-
-## Urgency
-
-- **`now`**: You were woken up specifically for this. Handle it promptly.
-- **`later`**: Informational, can wait. You might see these batched.
-
-Alerts are always treated as `now` regardless of the field value.
+**Don't reply when:**
+- You were told to do something ("generate images", "run sync") — just do it
+- The command had `--action` (deterministic handler) — the daemon already sent the result
+- It's a broadcast (`--to all`) with no specific question
 
 ## Action Field — Deterministic Dispatch
 
-If a message has an `action` field (e.g. `"action": "git-sync"`), the daemon tries to handle it locally with a handler script first — **before** it reaches you. You only see action messages when:
+If a message has an `action` field (e.g. `"action": "git-sync"`), the daemon handles it locally with a handler script — **you never see it**. The daemon runs the script, publishes the result back as a response, and that's it. Zero tokens.
+
+You only see action messages when:
 - No handler exists for that action (daemon escalates to you)
 - The handler failed (daemon escalates with error context)
 
-When this happens, do your best to handle it or explain why you can't.
+## How to Handle Inbound Messages
 
-## How to Respond to Hive Messages
+### Command — do the work
+```
+[hive:turq->pg1 ch:command] Check what services are using the most memory
+```
+1. Do the work
+2. Reply with results via `hive-cli reply` (only because info was requested)
 
-### Command received — do the work
+### Alert — triage urgently
 ```
-[hive:turq->pg1 ch:command] Check disk usage on this host and report back
-```
-1. Do the work (run commands, check things)
-2. Reply with results via `hive-cli reply`
-
-### Alert received — triage urgently
-```
-[hive:turq->pg1 ch:alert] URGENT Service mosquitto is down on pg1
+[hive:turq->pg1 ch:alert] URGENT Service mosquitto is down
 ```
 1. Investigate immediately
 2. Fix if possible
-3. Reply with status + notify Hugh if serious
+3. Notify Hugh if serious
 
-### Failed sync — investigate
+### Failed handler — investigate
 ```
-[hive:turq->pg1 ch:sync] git-sync handler failed: merge conflict in MEMORY.md
+[hive:turq->pg1 ch:command] git-sync handler failed: merge conflict
 ```
 1. Check the conflict
-2. Resolve if safe, otherwise escalate to Hugh
+2. Resolve if safe, otherwise escalate
 
-### Response received — consume it
+### Response — consume it
 ```
-[hive:pg1->turq ch:response] Done. 6 images uploaded to Meural.
+[hive:pg1->turq ch:response] {"ok": true, "synced": 2, "failed": 0}
 ```
-This is a reply to something you sent earlier. Use the info as needed.
+Use the information. Don't reply to responses.
 
 ## What NOT to Do
 
 - **Don't publish to MQTT directly** — always use `hive-cli`
 - **Don't reply to heartbeats** — the daemon handles those
-- **Don't generate your own envelope IDs** — `hive-cli` does this
-- **Don't ignore correlation IDs** — if the original has a `corr`, your reply must carry it (use `hive-cli reply`, it's automatic)
-- **Don't send secrets over hive** — use references ("pull from 1Password", not the actual key)
+- **Don't reply unnecessarily** — if no info was requested, stay silent
+- **Don't use `--wait` by default** — fire-and-forget is almost always right
+- **Don't send secrets over hive** — use references ("pull from 1Password")
