@@ -10,6 +10,7 @@ requires-python = ">=3.11"
 dependencies = [
     "aiomqtt>=2.0",
     "click>=8.0",
+    "hive-daemon",
 ]
 
 [project.optional-dependencies]
