@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# health-check — hive action handler
+# Checks OpenClaw gateway processes, CPU load, and RAM usage.
+# Receives envelope JSON on stdin, outputs JSON report on stdout.
+set -euo pipefail
+
+# Consume stdin (envelope) — not needed for health check
+cat > /dev/null
+
+# Check for OpenClaw gateway processes
+OC_PROCS=$(pgrep -c -f "openclaw" 2>/dev/null || echo "0")
+
+# CPU load averages
+read -r LOAD1 LOAD5 LOAD15 _ < /proc/loadavg
+
+# RAM usage from /proc/meminfo (in kB)
+MEM_TOTAL=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+MEM_AVAIL=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+MEM_USED=$((MEM_TOTAL - MEM_AVAIL))
+MEM_PCT=$(awk "BEGIN {printf \"%.1f\", ($MEM_USED / $MEM_TOTAL) * 100}")
+
+# Uptime in seconds
+UPTIME=$(awk '{print int($1)}' /proc/uptime)
+
+cat <<EOF
+{
+  "oc_processes": ${OC_PROCS},
+  "load": {
+    "1m": ${LOAD1},
+    "5m": ${LOAD5},
+    "15m": ${LOAD15}
+  },
+  "memory": {
+    "total_kb": ${MEM_TOTAL},
+    "used_kb": ${MEM_USED},
+    "available_kb": ${MEM_AVAIL},
+    "percent_used": ${MEM_PCT}
+  },
+  "uptime_seconds": ${UPTIME},
+  "status": "ok"
+}
+EOF

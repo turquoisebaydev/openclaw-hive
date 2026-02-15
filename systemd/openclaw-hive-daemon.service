@@ -1,0 +1,23 @@
+[Unit]
+Description=OpenClaw Hive Coordination Daemon
+Documentation=https://github.com/your-org/openclaw-hive
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/hive-daemon/venv/bin/hive-daemon --config %h/.config/hive/hive.toml
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hive-daemon
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/hive-daemon
+
+[Install]
+WantedBy=default.target

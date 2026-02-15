@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""echo — hive action handler
+
+Reads the envelope JSON from stdin, extracts the text field,
+and outputs it back as JSON on stdout. Exit 0.
+"""
+
+import json
+import sys
+
+envelope = json.load(sys.stdin)
+text = envelope.get("text", "")
+json.dump({"text": text}, sys.stdout)
