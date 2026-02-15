@@ -1,4 +1,4 @@
-"""Tests for OC bridge (OpenClaw system event injection)."""
+"""Tests for OC bridge (OpenClaw agent turn injection)."""
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -54,17 +54,18 @@ class TestBuildCommand:
         bridge = OcBridge([])
         inst = OcInstance(name="main")
         cmd = bridge._build_command(inst, "hello")
-        assert cmd == ["openclaw", "system", "event", "--text", "hello"]
+        assert cmd == ["openclaw", "agent", "--agent", "default", "--message", "hello"]
 
     def test_command_with_profile(self):
         bridge = OcBridge([])
         inst = OcInstance(name="main", profile="pg1")
         cmd = bridge._build_command(inst, "hello")
-        assert cmd == ["openclaw", "--profile", "pg1", "system", "event", "--text", "hello"]
+        assert cmd == ["openclaw", "--profile", "pg1", "agent", "--agent", "default", "--message", "hello"]
 
 
 class TestInjectEvent:
     async def test_inject_to_all_instances(self):
+        """inject_event should fire off background tasks for all instances."""
         instances = _make_instances()
         bridge = OcBridge(instances)
 
@@ -76,7 +77,10 @@ class TestInjectEvent:
         with patch("hive_daemon.oc_bridge.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
             await bridge.inject_event("test event")
 
-            # Should be called once per instance
+            # Give background tasks time to start
+            await asyncio.sleep(0.05)
+
+            # Should be called once per instance (fire-and-forget tasks)
             assert mock_exec.await_count == 2
 
     async def test_inject_to_specific_instance(self):
@@ -91,8 +95,9 @@ class TestInjectEvent:
         with patch("hive_daemon.oc_bridge.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
             await bridge.inject_event("test event", instance_name="main")
 
+            await asyncio.sleep(0.05)
+
             assert mock_exec.await_count == 1
-            # Verify correct profile was used
             call_args = mock_exec.call_args[0]
             assert "--profile" in call_args
             assert "default" in call_args
@@ -103,6 +108,7 @@ class TestInjectEvent:
 
         with patch("hive_daemon.oc_bridge.asyncio.create_subprocess_exec") as mock_exec:
             await bridge.inject_event("test", instance_name="nonexistent")
+            await asyncio.sleep(0.05)
             mock_exec.assert_not_awaited()
 
     async def test_inject_with_no_instances_configured(self):
@@ -110,6 +116,7 @@ class TestInjectEvent:
 
         with patch("hive_daemon.oc_bridge.asyncio.create_subprocess_exec") as mock_exec:
             await bridge.inject_event("test")
+            await asyncio.sleep(0.05)
             mock_exec.assert_not_awaited()
 
 
@@ -131,6 +138,25 @@ class TestInjectToInstance:
             assert call_args[0] == "openclaw"
             assert "--profile" in call_args
             assert "default" in call_args
+            assert "--agent" in call_args
+            assert "--message" in call_args
+
+    async def test_subprocess_gets_tls_env(self):
+        """Verify NODE_TLS_REJECT_UNAUTHORIZED=0 is passed to subprocess."""
+        bridge = OcBridge([])
+        inst = OcInstance(name="main")
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+        mock_proc.returncode = 0
+        mock_proc.wait = AsyncMock()
+
+        with patch("hive_daemon.oc_bridge.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await bridge._inject_to_instance(inst, "hello")
+
+            call_kwargs = mock_exec.call_args[1]
+            env = call_kwargs.get("env", {})
+            assert env.get("NODE_TLS_REJECT_UNAUTHORIZED") == "0"
 
     async def test_failed_injection_nonzero_exit(self):
         bridge = OcBridge([])
@@ -197,8 +223,10 @@ class TestInjectEnvelope:
             env = _make_envelope(from_="node-a", to="node-b", ch="command", text="do it")
             await bridge.inject_envelope(env)
 
+            await asyncio.sleep(0.05)
+
             call_args = mock_exec.call_args[0]
-            text_arg = call_args[call_args.index("--text") + 1]
+            text_arg = call_args[call_args.index("--message") + 1]
             assert "[hive:node-a->node-b ch:command]" in text_arg
             assert "do it" in text_arg
 
@@ -215,8 +243,10 @@ class TestInjectEnvelope:
             env = _make_envelope(ch="alert", text="disk full")
             await bridge.inject_envelope(env, prefix="URGENT")
 
+            await asyncio.sleep(0.05)
+
             call_args = mock_exec.call_args[0]
-            text_arg = call_args[call_args.index("--text") + 1]
+            text_arg = call_args[call_args.index("--message") + 1]
             assert "URGENT" in text_arg
             assert "disk full" in text_arg
 
@@ -232,6 +262,8 @@ class TestInjectEnvelope:
         with patch("hive_daemon.oc_bridge.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
             env = _make_envelope()
             await bridge.inject_envelope(env, instance_name="secondary")
+
+            await asyncio.sleep(0.05)
 
             assert mock_exec.await_count == 1
             call_args = mock_exec.call_args[0]

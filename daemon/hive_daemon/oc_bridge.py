@@ -1,43 +1,62 @@
-"""OpenClaw system event injection bridge.
+"""OpenClaw agent turn injection bridge.
 
 Injects hive messages into local OpenClaw instances by running
-``openclaw [--profile X] system event --text "..."`` as a subprocess.
+``openclaw [--profile X] agent --agent default --message "..."`` as a subprocess.
+
+Previous versions used ``system event`` which only queues text passively;
+the ``agent`` command triggers a real LLM turn so the message is processed
+immediately.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import shlex
+import os
 
 from hive_daemon.config import OcInstance
 from hive_daemon.envelope import Envelope
 
 log = logging.getLogger(__name__)
 
+# Agent turns involve LLM processing — allow generous timeout.
+DEFAULT_TIMEOUT = 300
+
+# Env vars injected into openclaw subprocess for self-signed cert compat.
+_SUBPROCESS_ENV: dict[str, str] | None = None
+
+
+def _get_subprocess_env() -> dict[str, str]:
+    """Build subprocess environment with NODE_TLS_REJECT_UNAUTHORIZED=0."""
+    global _SUBPROCESS_ENV
+    if _SUBPROCESS_ENV is None:
+        _SUBPROCESS_ENV = {**os.environ, "NODE_TLS_REJECT_UNAUTHORIZED": "0"}
+    return _SUBPROCESS_ENV
+
 
 class OcBridge:
     """Bridges hive messages into local OpenClaw instances via CLI.
 
-    Runs ``openclaw system event --text ...`` as an async subprocess for
-    each configured OC instance.
+    Runs ``openclaw agent --agent default --message ...`` as an async
+    subprocess for each configured OC instance.  This triggers a real
+    agent turn so the gateway processes the message immediately.
 
     Args:
         oc_instances: List of local OC instances from config.
-        timeout: Subprocess timeout in seconds (default 30).
+        timeout: Subprocess timeout in seconds (default 300).
     """
 
     def __init__(
         self,
         oc_instances: list[OcInstance],
-        timeout: int = 30,
+        timeout: int = DEFAULT_TIMEOUT,
     ) -> None:
         self._instances = oc_instances
         self._timeout = timeout
 
     @staticmethod
     def format_event_text(envelope: Envelope, prefix: str = "") -> str:
-        """Format envelope into system event text with hive metadata.
+        """Format envelope into message text with hive metadata.
 
         Prepends ``[hive:{from}->{to} ch:{ch}]`` and optional prefix to
         the envelope text.  Appends ``ENVELOPE_JSON:`` with the raw
@@ -59,7 +78,7 @@ class OcBridge:
         cmd = ["openclaw"]
         if instance.profile:
             cmd.extend(["--profile", instance.profile])
-        cmd.extend(["system", "event", "--text", text])
+        cmd.extend(["agent", "--agent", "default", "--message", text])
         return cmd
 
     async def inject_event(
@@ -67,10 +86,14 @@ class OcBridge:
         text: str,
         instance_name: str | None = None,
     ) -> None:
-        """Inject a system event into OC instance(s).
+        """Inject an agent message into OC instance(s).
+
+        Fires off the agent turn as a background task (does not block
+        waiting for the LLM to finish).  The turn runs asynchronously
+        in the gateway.
 
         Args:
-            text: The event text to inject.
+            text: The message text to send.
             instance_name: Target a specific instance by name.
                 If None, injects to all configured instances.
         """
@@ -86,18 +109,28 @@ class OcBridge:
                 return
 
         for instance in targets:
-            await self._inject_to_instance(instance, text)
+            # Fire-and-forget: launch as background task so we don't
+            # block the daemon while the LLM processes.
+            asyncio.create_task(
+                self._inject_to_instance(instance, text),
+                name=f"oc-inject-{instance.name}",
+            )
 
     async def _inject_to_instance(self, instance: OcInstance, text: str) -> None:
         """Run the openclaw CLI command for a single instance."""
         cmd = self._build_command(instance, text)
-        log.info("injecting event to OC instance %r: %s", instance.name, cmd)
+        log.info(
+            "injecting agent message to OC instance %r: %s",
+            instance.name,
+            " ".join(cmd[:4]) + " ...",  # log command prefix only (text may be large)
+        )
 
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=_get_subprocess_env(),
             )
 
             try:
@@ -109,21 +142,21 @@ class OcBridge:
                 proc.kill()
                 await proc.wait()
                 log.error(
-                    "OC event injection timed out for instance %r after %ds",
+                    "OC agent injection timed out for instance %r after %ds",
                     instance.name,
                     self._timeout,
                 )
                 return
 
             if proc.returncode == 0:
-                log.info("event injected to OC instance %r", instance.name)
+                log.info("agent message processed by OC instance %r", instance.name)
             else:
                 stderr_text = stderr.decode(errors="replace").strip()
                 log.error(
-                    "OC event injection failed for instance %r (exit %d): %s",
+                    "OC agent injection failed for instance %r (exit %d): %s",
                     instance.name,
                     proc.returncode,
-                    stderr_text,
+                    stderr_text[:500],
                 )
 
         except FileNotFoundError:
@@ -145,7 +178,7 @@ class OcBridge:
         prefix: str = "",
         instance_name: str | None = None,
     ) -> None:
-        """Format an envelope and inject it as a system event.
+        """Format an envelope and inject it as an agent message.
 
         Convenience method that formats the envelope text with hive
         metadata before injecting.
