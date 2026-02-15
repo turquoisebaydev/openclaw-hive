@@ -15,8 +15,8 @@ from hive_cli.commands import send, reply, status, roster
 @click.option(
     "--config", "config_path",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    default="hive.toml",
-    help="Path to hive.toml config file.",
+    default=Path.home() / ".config" / "hive" / "hive.toml",
+    help="Path to hive.toml config file (defaults to ~/.config/hive/hive.toml).",
 )
 @click.pass_context
 def cli(ctx: click.Context, config_path: Path) -> None:

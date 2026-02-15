@@ -25,11 +25,11 @@ YOU  →  hive-cli reply/send  →  MQTT  →  their hive-daemon  →  system ev
 
 ## hive-cli Commands
 
-The CLI reads config from `hive.toml`. Always pass `--config <path-to-hive.toml>`.
+The CLI reads config from `~/.config/hive/hive.toml` by default. You can override this with `--config <path>`.
 
 ### Send a message (fire-and-forget)
 ```bash
-hive-cli --config /path/to/hive.toml send \
+hive-cli send \
   --to <node-id> \
   --ch <channel> \
   --text "your message" \
@@ -44,7 +44,7 @@ hive-cli --config /path/to/hive.toml send \
 
 ### Send and wait for response (synchronous)
 ```bash
-hive-cli --config /path/to/hive.toml send \
+hive-cli send \
   --to pg1 \
   --ch command \
   --action ping \
@@ -58,7 +58,7 @@ Blocks up to N seconds. Prints the response envelope JSON when a correlated repl
 ### Reply to a hive command
 When you receive a hive command via system event, reply with:
 ```bash
-hive-cli --config /path/to/hive.toml reply \
+hive-cli reply \
   --to-msg '<original-envelope-json>' \
   --text "your response"
 ```
@@ -67,12 +67,12 @@ The reply automatically sets `ch: response`, copies the correlation ID, and sets
 
 ### Check cluster status
 ```bash
-hive-cli --config /path/to/hive.toml status
+hive-cli status
 ```
 
 ### View node capabilities
 ```bash
-hive-cli --config /path/to/hive.toml roster
+hive-cli roster
 ```
 
 ## Channels
