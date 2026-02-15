@@ -74,6 +74,31 @@ class HeartbeatManager:
         """Map of node_id -> PeerState for all tracked peers."""
         return dict(self._peers)
 
+    def _all_known_instances(self) -> list[str]:
+        """Expand known daemon peers into their managed OC instance names.
+
+        Uses the ``oc_instances`` list from each peer's heartbeat payload
+        to resolve individual gateway names. Our own managed instances are
+        always included. Falls back to the daemon node_id when a peer's
+        payload doesn't include instance info.
+        """
+        instances: set[str] = set()
+        # Our own instances
+        for inst in self._config.oc_instances:
+            instances.add(inst.name)
+        if not self._config.oc_instances:
+            instances.add(self._config.node_id)
+        # Remote peer instances (from heartbeat payloads)
+        for peer in self._peers.values():
+            if peer.payload and "oc_instances" in peer.payload:
+                for oc in peer.payload["oc_instances"]:
+                    if isinstance(oc, dict) and "name" in oc:
+                        instances.add(oc["name"])
+            else:
+                # Fallback: use the daemon node_id
+                instances.add(peer.node_id)
+        return sorted(instances)
+
     def _build_heartbeat_payload(self) -> str:
         """Build the JSON text payload for a heartbeat message."""
         uptime_s = round(time.monotonic() - self._start_time, 1)
@@ -119,7 +144,7 @@ class HeartbeatManager:
         instances are configured.
         """
         uptime_s = round(time.monotonic() - self._start_time, 1)
-        known_peers = list(self._peers.keys())
+        known_peers = self._all_known_instances()
 
         instance_names = [inst.name for inst in self._config.oc_instances]
         if not instance_names:

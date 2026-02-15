@@ -276,17 +276,29 @@ class TestPublishState:
             assert call[1]["retain"] is True
 
     async def test_state_includes_known_peers(self):
-        config = _make_config(node_id="state-node")
+        """known_peers expands daemon peers into their managed OC instances."""
+        config = _make_config(
+            node_id="turq",
+            oc_instances=[OcInstance(name="turq"), OcInstance(name="mini1")],
+        )
         client = _make_mock_client()
         mgr = HeartbeatManager(config, client)
 
-        mgr.track_peer(_make_heartbeat_envelope("peer-a"))
-        mgr.track_peer(_make_heartbeat_envelope("peer-b"))
+        # peer-a daemon manages instance "alpha"
+        env_a = _make_heartbeat_envelope("peer-a")
+        env_a = Envelope(
+            v=1, id="hb-a", ts=1000000, from_="peer-a", to="all",
+            ch="heartbeat", urgency="later",
+            text=json.dumps({"node_id": "peer-a", "uptime_s": 10,
+                             "oc_instances": [{"name": "alpha", "status": "configured"}]}),
+        )
+        mgr.track_peer(env_a)
 
         await mgr.publish_state()
 
         state = json.loads(client.publish.call_args[0][1])
-        assert set(state["known_peers"]) == {"peer-a", "peer-b"}
+        # Should include our own instances (turq, mini1) + peer's instance (alpha)
+        assert set(state["known_peers"]) == {"turq", "mini1", "alpha"}
 
     async def test_per_instance_state_node_id_matches_instance(self):
         """Each state entry's node_id should be the instance name, not daemon."""
