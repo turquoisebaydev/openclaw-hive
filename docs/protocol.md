@@ -1,6 +1,6 @@
 # Hive Protocol — Inter-Gateway Coordination for OpenClaw Clusters
 
-**Status:** Design (2026-02-15)
+**Status:** Phase 1 complete, live on turq + pg1 (2026-02-16)
 **Authors:** Hugh + Turq
 
 ## Overview
@@ -22,16 +22,17 @@ Each gateway remains fully independent. Coordination happens through natural-lan
 ```
   MQTT (hive topics)
        ↕
-  [hive-service daemon]          ← thin local daemon, one per box
+  [hive-daemon]                  ← thin local daemon, one per box
        ↕                    ↕
-  system event (in)    hive-reply tool (out)
+  system event (in)    hive-cli (out)
        ↕                    ↕
   [OpenClaw instance(s)]
 ```
 
-- **Inbound to OC:** hive service → `openclaw system event --text "..."` into local OC instance(s)
-- **Outbound from OC:** OC calls `hive-reply` tool/script → hive service → MQTT
-- **Local actions:** hive service handles deterministic tasks (git sync, health, file ops) without involving OC at all
+- **Inbound to OC:** hive-daemon → `openclaw system event --text "..."` into local OC instance(s)
+- **Outbound from OC:** OC calls `hive-cli send/reply` → publishes to MQTT directly
+- **Synchronous round-trip:** OC calls `hive-cli send --wait N` → publishes, blocks, returns response
+- **Local actions:** hive-daemon handles deterministic tasks (git sync, health, file ops) without involving OC at all
 
 ## Message Envelope
 
@@ -125,12 +126,19 @@ System event text includes metadata naturally:
 
 ### What OC Sends Back
 
-OC calls a `hive-reply` tool or script:
+OC calls `hive-cli` to reply or send new messages:
 ```bash
-hive-reply --id abc123 --text "Done. 6 images uploaded to Meural."
+# Reply to a command (correlation automatic via create_reply)
+hive-cli reply --to-msg '<original-envelope-json>' --text "Done. 6 images uploaded."
+
+# Or send a new command to another node
+hive-cli send --to pg1 --ch command --text "do this next thing"
+
+# Synchronous: send and block for the response
+hive-cli send --to pg1 --ch command --text "check status" --wait 60
 ```
 
-The hive service publishes the response on MQTT with the correlation ID to `turq/hive/<original-sender>/response`.
+The CLI publishes directly to MQTT. For replies, `create_reply` automatically sets `corr` and `replyTo` from the original envelope.
 
 ## Hive Heartbeat (Machine-to-Machine)
 
@@ -155,13 +163,40 @@ Retained messages on sync topics so offline nodes catch up on reconnect.
 
 ## Correlation / Request-Reply Pattern
 
-For commands that expect a response:
+Two patterns for correlating commands with responses:
 
-1. Sender generates `corr: "abc123"` and sets `replyTo: null`
-2. Receiver processes, then sends response with `corr: "abc123"` and `replyTo: "<original-msg-id>"`
-3. Sender's hive service matches by `corr` and delivers to the waiting context
+### Synchronous: `--wait` (CLI blocks for response)
 
-OC can choose not to respond — the correlation is optional guidance, not a contract.
+The simplest pattern — the CLI sends a command, subscribes for a matching response, and blocks until it arrives or times out. The entire request/response cycle happens in one tool call, so the calling OC agent never loses context.
+
+```bash
+hive-cli send --to pg1 --ch command --text "check disk usage" --wait 60
+# Blocks up to 60s, prints the full response envelope JSON on match
+# Exits 0 on success, 1 on timeout
+```
+
+Correlation matching: the CLI uses the outbound message's `id` as the `corr`. The responder's `create_reply` automatically copies this. The CLI filters inbound responses by `corr` match.
+
+**Use this for:** tasks where you need the answer before continuing (disk checks, status queries, short operations).
+
+### Asynchronous: Daemon correlation enrichment
+
+For fire-and-forget commands (long-running jobs, broadcasts), the response arrives later as a system event. The daemon solves the "OC forgot what it asked" problem:
+
+1. Daemon subscribes to `{prefix}/+/command` and passively tracks all outbound commands from this node in a `CorrelationStore` (in-memory, 1-hour TTL).
+2. When a response arrives with a `corr` that matches a tracked command, the daemon enriches the system event with the original command text:
+   ```
+   [hive:pg1->turq ch:response] re: "check disk usage" Disk: 45% used, 203GB free
+   ```
+3. OC sees the response with full context — no memory file, no session state needed.
+
+**Use this for:** long-running tasks, broadcasts to all nodes, fire-and-forget delegation.
+
+### General rules
+
+- `create_reply()` automatically sets `corr` to the original message's `corr` (or `id` if no `corr`), and sets `replyTo` to the original's `id`.
+- OC can choose not to respond — correlation is guidance, not a contract.
+- Correlation entries expire after 1 hour (configurable).
 
 ## Trust & Security
 
@@ -178,16 +213,22 @@ OC can choose not to respond — the correlation is optional guidance, not a con
 Called by OC agents (via skills) or humans. Does one thing and exits.
 
 ```bash
-# Send a command to a specific node
-hive-cli send --to pg1-18890 --ch command --text "generate meural images" --expect-reply
+# Send a command (fire-and-forget)
+hive-cli send --to pg1 --ch command --text "generate meural images"
 
-# Reply to a correlated request
-hive-cli reply --corr abc123 --text "done, 6 images uploaded"
+# Send and wait for response (synchronous, blocks up to 60s)
+hive-cli send --to pg1 --ch command --text "check disk usage" --wait 60
 
-# Cluster status
+# Trigger a deterministic action (no LLM on remote end)
+hive-cli send --to pg1 --ch sync --action git-sync --text '{"ref":"main"}'
+
+# Reply to a correlated request (original envelope as JSON string or file path)
+hive-cli reply --to-msg '<envelope-json>' --text "done, 6 images uploaded"
+
+# Cluster status (reads retained meta/state messages)
 hive-cli status
 
-# Show known nodes and roles
+# Show node capabilities and handlers
 hive-cli roster
 ```
 
@@ -582,39 +623,48 @@ Users install handlers by copying (or symlinking) into their `hive-daemon.d/` di
 
 ## Implementation Plan
 
-### Phase 1: Proof of concept
-- [ ] `hive-daemon`: subscribe to topics, log messages, handle heartbeat, inject system events
-- [ ] `hive-cli`: send, reply, status commands
-- [ ] `hive-member` skill: SKILL.md + bundled hive-cli reference
-- [ ] Test: turq sends command to pg1, pg1 agent processes, replies back via hive-cli
-- [ ] Test: sync event triggers immediate git pull (replaces 5-min timer)
+### Phase 1: Core daemon + CLI + skills ✅
+- [x] `hive-daemon`: MQTT subscriber, message router, handler dispatcher, heartbeat manager, OC bridge
+- [x] `hive-cli`: send (with `--wait`), reply, status, roster commands
+- [x] `hive-member` skill: full protocol reference, envelope schema, channels, correlation, CLI usage
+- [x] `hive-master` skill: delegation patterns, fan-out, correlation tracking, escalation rules
+- [x] Correlation: CLI `--wait` for synchronous round-trips + daemon `CorrelationStore` for async enrichment
+- [x] Example handlers: echo, ping, git-sync, health-check
+- [x] systemd + launchd service unit templates
+- [x] Test: turq sends command to pg1, pg1 receives via OC bridge, replies back ✅
+- [x] Test: `--wait` blocks and returns matched response within timeout ✅
+- [x] Test: daemon enriches async responses with original command context ✅
+- [x] 127 tests passing (105 daemon + 22 CLI)
 
-### Phase 2: Production
-- [ ] `hive-master` skill with cluster roster and delegation logic
-- [ ] systemd/launchd service units for hive-daemon on each box
-- [ ] Multi-instance support (turq box has turq + mini1)
-- [ ] Heartbeat failure detection + alert escalation
-- [ ] Correlation timeout handling (no response after N seconds)
+### Phase 2: Production hardening
+- [ ] Install as persistent services (launchd on turq, systemd on pg1)
+- [ ] Multi-instance support (turq hive.toml lists both turq + mini1 OC instances)
+- [ ] Install hive skills into OC skill directories on all nodes
+- [ ] Build git-sync handler into a real sync-on-commit flow (replace 5-min timer)
+- [ ] Build sentinel handlers (check-email, check-calendar, check-services)
+- [ ] Correlation timeout handling (daemon alerts on expired pending commands)
+- [ ] Roster publishing (daemon publishes discovered handlers to meta/roster at startup)
 
 ### Phase 3: Polish
 - [ ] Hive dashboard / status view (via `hive-cli status` or web)
 - [ ] Topic ACLs in Mosquitto (per-node publish/subscribe restrictions)
 - [ ] Replace git sync timers with hive sync events entirely
+- [ ] Handler-level config (e.g., `hive-daemon.d/git-sync.conf` for workspace paths)
 
 ## Resolved Questions
 
 1. ~~Should hive-reply be a script, an OC skill, or both?~~ → `hive-cli` is the tool, skills tell OC how to use it.
-2. ~~Should hive-daemon have a local state store?~~ → No. MQTT retained messages on meta topics are the state store.
-3. ~~Should hive-cli be Python or Node?~~ → Doesn't matter. Handlers in `hive-daemon.d/` can be any language. CLI and daemon language chosen for best fit.
+2. ~~Should hive-daemon have a local state store?~~ → No. MQTT retained messages on meta topics + in-memory CorrelationStore for active requests.
+3. ~~Should hive-cli be Python or Node?~~ → Python (matches daemon, shares envelope module). Handlers in `hive-daemon.d/` can be any language.
 4. ~~How does this interact with OC's cron?~~ → hive-master can trigger remote work via `hive-cli send --action <handler>`. For LLM-needed tasks, the system event approach works. Cron stays local to each gateway.
+5. ~~How does OC correlate responses across sessions?~~ → Two patterns: (a) `--wait` for synchronous (stays in one tool call), (b) daemon enrichment for async (original command text prepended to system event).
+6. ~~How does the daemon know about outbound commands?~~ → Subscribes to `{prefix}/+/command` to passively observe all commands on the bus, including its own.
 
 ## Open Questions
 
 1. Do we need message deduplication / idempotency keys?
 2. Local Unix socket vs MQTT-only for `hive-cli` ↔ `hive-daemon` communication?
-3. Should the daemon support handler-level config (e.g., `hive-daemon.d/git-sync.conf` for workspace paths)?
-4. Auth between hive members — is LAN isolation sufficient or do we want message signing?
-5. How should the daemon handle multiple local OC instances (round-robin, route by content, or broadcast system events to all)?
+3. Auth between hive members — is LAN isolation sufficient or do we want message signing?
 
 ---
 
