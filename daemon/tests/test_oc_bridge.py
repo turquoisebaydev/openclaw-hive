@@ -33,12 +33,14 @@ class TestFormatEventText:
     def test_basic_format(self):
         env = _make_envelope(from_="node-a", to="node-b", ch="command", text="hello world")
         text = OcBridge.format_event_text(env)
-        assert text == "[hive:node-a->node-b ch:command] hello world"
+        assert text.startswith("[hive:node-a->node-b ch:command] hello world")
+        assert "\nENVELOPE_JSON:" in text
 
     def test_with_prefix(self):
         env = _make_envelope(text="urgent stuff")
         text = OcBridge.format_event_text(env, prefix="URGENT")
-        assert text == "[hive:node-a->node-b ch:command] URGENT urgent stuff"
+        assert text.startswith("[hive:node-a->node-b ch:command] URGENT urgent stuff")
+        assert "\nENVELOPE_JSON:" in text
 
     def test_alert_channel(self):
         env = _make_envelope(ch="alert", text="disk full")

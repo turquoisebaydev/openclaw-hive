@@ -40,14 +40,19 @@ class OcBridge:
         """Format envelope into system event text with hive metadata.
 
         Prepends ``[hive:{from}->{to} ch:{ch}]`` and optional prefix to
-        the envelope text.
+        the envelope text.  Appends ``ENVELOPE_JSON:`` with the raw
+        envelope so the receiving OC agent can use ``hive-cli reply``.
         """
+        import json
+
         meta = f"[hive:{envelope.from_}->{envelope.to} ch:{envelope.ch}]"
         parts = [meta]
         if prefix:
             parts.append(prefix)
         parts.append(envelope.text)
-        return " ".join(parts)
+        readable = " ".join(parts)
+        envelope_json = json.dumps(envelope.to_json(), separators=(",", ":"))
+        return f"{readable}\nENVELOPE_JSON:{envelope_json}"
 
     def _build_command(self, instance: OcInstance, text: str) -> list[str]:
         """Build the openclaw CLI command for a given instance."""
