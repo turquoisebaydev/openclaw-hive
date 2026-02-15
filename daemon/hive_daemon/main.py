@@ -13,7 +13,10 @@ from pathlib import Path
 import aiomqtt
 
 from hive_daemon.config import HiveConfig, load_config
+from hive_daemon.dispatcher import Dispatcher
 from hive_daemon.envelope import Envelope, EnvelopeError
+from hive_daemon.heartbeat import HeartbeatManager
+from hive_daemon.oc_bridge import OcBridge
 from hive_daemon.router import Router
 
 log = logging.getLogger("hive_daemon")
@@ -74,12 +77,17 @@ async def _handle_message(
     await router.route(envelope)
 
 
-def setup_router(config: HiveConfig) -> Router:
-    """Create a Router with default channel handlers.
+def setup_router(
+    config: HiveConfig,
+    *,
+    heartbeat_mgr: HeartbeatManager | None = None,
+    oc_bridge: OcBridge | None = None,
+    dispatcher: Dispatcher | None = None,
+) -> Router:
+    """Create a Router with channel handlers.
 
-    Channel handlers for command, sync, heartbeat, etc. are registered here.
-    Placeholder handlers log the message — real implementations will be added
-    in later milestones (heartbeat, oc_bridge, dispatcher).
+    Wires real handlers for command, alert, sync, and heartbeat channels.
+    Falls back to logging for channels without a dedicated handler.
     """
     router = Router()
 
@@ -87,8 +95,50 @@ def setup_router(config: HiveConfig) -> Router:
         log.info("received %s message %s from %s: %s",
                  envelope.ch, envelope.id, envelope.from_, envelope.text[:80])
 
-    for ch in ("command", "response", "sync", "heartbeat", "status", "alert"):
-        router.register(ch, _log_handler)
+    # --- command channel -> OC bridge ---
+    if oc_bridge is not None:
+        async def _command_handler(envelope: Envelope) -> None:
+            log.info("routing command %s to OC bridge", envelope.id)
+            await oc_bridge.inject_envelope(envelope)
+        router.register("command", _command_handler)
+    else:
+        router.register("command", _log_handler)
+
+    # --- alert channel -> OC bridge with URGENT prefix ---
+    if oc_bridge is not None:
+        async def _alert_handler(envelope: Envelope) -> None:
+            log.info("routing alert %s to OC bridge (URGENT)", envelope.id)
+            await oc_bridge.inject_envelope(envelope, prefix="URGENT")
+        router.register("alert", _alert_handler)
+    else:
+        router.register("alert", _log_handler)
+
+    # --- sync channel -> dispatcher (if handler exists) or OC bridge ---
+    if dispatcher is not None or oc_bridge is not None:
+        async def _sync_handler(envelope: Envelope) -> None:
+            if dispatcher is not None and envelope.action and dispatcher.has_handler(envelope.action):
+                log.info("dispatching sync action %r from %s", envelope.action, envelope.id)
+                await dispatcher.dispatch(envelope)
+            elif oc_bridge is not None:
+                log.info("no handler for sync %s, falling back to OC bridge", envelope.id)
+                await oc_bridge.inject_envelope(envelope)
+            else:
+                log.info("sync message %s: no dispatcher or OC bridge", envelope.id)
+        router.register("sync", _sync_handler)
+    else:
+        router.register("sync", _log_handler)
+
+    # --- heartbeat channel -> heartbeat manager ---
+    if heartbeat_mgr is not None:
+        async def _heartbeat_handler(envelope: Envelope) -> None:
+            heartbeat_mgr.track_peer(envelope)
+        router.register("heartbeat", _heartbeat_handler)
+    else:
+        router.register("heartbeat", _log_handler)
+
+    # --- status and response -> log only ---
+    router.register("status", _log_handler)
+    router.register("response", _log_handler)
 
     return router
 
@@ -105,7 +155,12 @@ async def run_daemon(config: HiveConfig) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, shutdown.set)
 
-    router = setup_router(config)
+    # Set up dispatcher
+    dispatcher = Dispatcher(config.handler_dir, timeout=config.handler_timeout)
+    dispatcher.discover()
+
+    # Set up OC bridge
+    oc_bridge = OcBridge(config.oc_instances) if config.oc_instances else None
 
     while not shutdown.is_set():
         try:
@@ -116,14 +171,42 @@ async def run_daemon(config: HiveConfig) -> None:
                 password=config.mqtt.password,
                 keepalive=config.mqtt.keepalive,
             ) as client:
-                for topic in topics:
-                    await client.subscribe(topic)
-                    log.info("subscribed to %s", topic)
+                # Set up heartbeat manager (needs client for publishing)
+                async def _heartbeat_alert(node_id: str, last_seen: float) -> None:
+                    log.warning("peer %s missed heartbeat, alerting", node_id)
+                    if oc_bridge is not None:
+                        await oc_bridge.inject_event(
+                            f"[hive:heartbeat] peer {node_id} missed heartbeat — may be offline"
+                        )
 
-                async for msg in client.messages:
-                    if shutdown.is_set():
-                        break
-                    await _handle_message(msg, config, router)
+                heartbeat_mgr = HeartbeatManager(
+                    config,
+                    client,
+                    alert_callback=_heartbeat_alert,
+                    interval=config.heartbeat.interval,
+                    miss_threshold=config.heartbeat.miss_threshold,
+                )
+
+                router = setup_router(
+                    config,
+                    heartbeat_mgr=heartbeat_mgr,
+                    oc_bridge=oc_bridge,
+                    dispatcher=dispatcher,
+                )
+
+                heartbeat_mgr.start()
+
+                try:
+                    for topic in topics:
+                        await client.subscribe(topic)
+                        log.info("subscribed to %s", topic)
+
+                    async for msg in client.messages:
+                        if shutdown.is_set():
+                            break
+                        await _handle_message(msg, config, router)
+                finally:
+                    await heartbeat_mgr.stop()
 
         except aiomqtt.MqttError as exc:
             if shutdown.is_set():
