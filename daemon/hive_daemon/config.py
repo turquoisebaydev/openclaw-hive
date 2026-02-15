@@ -48,6 +48,18 @@ class HiveConfig:
     heartbeat: HeartbeatConfig = field(default_factory=HeartbeatConfig)
     log_level: str = "INFO"
 
+    @property
+    def instance_names(self) -> set[str]:
+        """Set of all managed OC instance names (hive addresses)."""
+        return {inst.name for inst in self.oc_instances}
+
+    def instance_by_name(self, name: str) -> OcInstance | None:
+        """Look up an OC instance by its hive address name."""
+        for inst in self.oc_instances:
+            if inst.name == name:
+                return inst
+        return None
+
 
 def load_config(path: Path) -> HiveConfig:
     """Load configuration from a TOML file.

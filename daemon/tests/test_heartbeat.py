@@ -229,7 +229,8 @@ class TestPublishHeartbeat:
 
 
 class TestPublishState:
-    async def test_publishes_retained_state(self):
+    async def test_publishes_retained_state_no_instances(self):
+        """With no OC instances, falls back to a single daemon-level entry."""
         config = _make_config(node_id="state-node")
         client = _make_mock_client()
         mgr = HeartbeatManager(config, client)
@@ -244,6 +245,35 @@ class TestPublishState:
         state = json.loads(call_args[0][1])
         assert state["node_id"] == "state-node"
         assert state["status"] == "online"
+        assert state["daemon_node"] == "state-node"
+
+    async def test_publishes_per_instance_state(self):
+        """With OC instances, publishes a retained entry for each."""
+        config = _make_config(
+            node_id="turq",
+            oc_instances=[
+                OcInstance(name="turq", port=18789),
+                OcInstance(name="mini1", profile="mini1", port=18889),
+            ],
+        )
+        client = _make_mock_client()
+        mgr = HeartbeatManager(config, client)
+
+        await mgr.publish_state()
+
+        assert client.publish.await_count == 2
+        topics = [call[0][0] for call in client.publish.call_args_list]
+        assert "turq/hive/meta/turq/state" in topics
+        assert "turq/hive/meta/mini1/state" in topics
+
+        # Verify each state entry has the correct structure
+        for call in client.publish.call_args_list:
+            state = json.loads(call[0][1])
+            assert state["status"] == "online"
+            assert state["daemon_node"] == "turq"
+            assert "uptime_s" in state
+            assert "known_peers" in state
+            assert call[1]["retain"] is True
 
     async def test_state_includes_known_peers(self):
         config = _make_config(node_id="state-node")
@@ -257,6 +287,30 @@ class TestPublishState:
 
         state = json.loads(client.publish.call_args[0][1])
         assert set(state["known_peers"]) == {"peer-a", "peer-b"}
+
+    async def test_per_instance_state_node_id_matches_instance(self):
+        """Each state entry's node_id should be the instance name, not daemon."""
+        config = _make_config(
+            node_id="turq",
+            oc_instances=[
+                OcInstance(name="turq"),
+                OcInstance(name="mini1"),
+            ],
+        )
+        client = _make_mock_client()
+        mgr = HeartbeatManager(config, client)
+
+        await mgr.publish_state()
+
+        states = {}
+        for call in client.publish.call_args_list:
+            state = json.loads(call[0][1])
+            states[state["node_id"]] = state
+
+        assert "turq" in states
+        assert "mini1" in states
+        assert states["turq"]["daemon_node"] == "turq"
+        assert states["mini1"]["daemon_node"] == "turq"
 
 
 class TestStartStop:

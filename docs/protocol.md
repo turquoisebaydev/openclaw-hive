@@ -100,9 +100,20 @@ Examples:
 
 ### Subscription Pattern
 
-Each hive service subscribes to:
-- `turq/hive/<mynode>/+` — messages addressed to this node
+Each hive daemon subscribes to:
+- `turq/hive/<instance>/+` — for **each** managed OC instance (e.g. turq + mini1)
 - `turq/hive/all/+` — cluster-wide broadcasts
+- `turq/hive/+/command` — all outbound commands (for correlation tracking)
+
+Example: the turq daemon with instances `turq` and `mini1` subscribes to:
+```
+turq/hive/turq/+
+turq/hive/mini1/+
+turq/hive/all/+
+turq/hive/+/command
+```
+
+This means `hive-cli send --to mini1 --ch command --text "..."` reaches the turq daemon, which routes it to the mini1 OC instance specifically.
 
 ## Hive Service Routing Rules
 
@@ -242,13 +253,14 @@ hive-cli roster
 One per physical box. Manages all MQTT subscriptions and routing. **The core daemon is generic and open-sourceable — all custom logic lives in pluggable handler scripts.**
 
 **Responsibilities:**
-- Subscribe to `turq/hive/<mynode>/+` and `turq/hive/all/+`
-- Route inbound: pluggable handler vs `openclaw system event` into local OC instance(s)
-- Machine-to-machine heartbeats (no LLM)
+- Subscribe to `turq/hive/<instance>/+` for each managed OC instance, plus `all/+` and `+/command`
+- Route inbound messages to the **correct OC instance** based on the MQTT topic target
+- Publish per-instance state to `meta/{instance}/state` (each gateway appears individually in `hive-cli status`)
+- Machine-to-machine heartbeats (no LLM) — `from` field uses daemon node_id
 - Dispatch deterministic actions to `hive-daemon.d/` handler scripts
 - Correlation tracking (outstanding requests, timeouts) via MQTT meta channel
 - Expose local status for `hive-cli status` to read
-- Multi-instance aware (turq box has turq-18789 + mini1-18889)
+- Multi-instance aware (turq box manages turq + mini1 as separate hive addresses)
 - systemd (Linux) / launchd (macOS) managed
 
 **The boundary:**
@@ -360,22 +372,25 @@ turq/hive/meta/{node}/{action}      ← latest result of deterministic action (r
 turq/hive/meta/corr/{corr-id}       ← correlation tracking (retained, cleared on completion)
 ```
 
-### Node State (`meta/{node}/state`)
+### Per-Instance State (`meta/{instance}/state`)
 
-Published by each daemon continuously (heartbeat interval). Retained.
+Published by the daemon at heartbeat interval — one retained entry **per managed OC instance**, not per daemon. This makes every gateway a first-class citizen visible in `hive-cli status`.
 
 ```json
 {
-  "node": "pg1-18890",
+  "node_id": "mini1",
   "status": "online",
-  "since": 1771143000,
-  "load": 0.3,
-  "oc_instances": ["pg1-18890"],
-  "channels": ["telegram", "mqtt"],
-  "jobs_active": 2,
-  "last_heartbeat": 1771143500
+  "uptime_s": 3600.0,
+  "known_peers": ["pg1"],
+  "daemon_node": "turq"
 }
 ```
+
+The `daemon_node` field identifies which daemon manages this instance (useful when one daemon manages multiple gateways).
+
+Example: the turq daemon publishes both:
+- `turq/hive/meta/turq/state`
+- `turq/hive/meta/mini1/state`
 
 ### Roster (`meta/{node}/roster`)
 
@@ -638,7 +653,7 @@ Users install handlers by copying (or symlinking) into their `hive-daemon.d/` di
 
 ### Phase 2: Production hardening
 - [ ] Install as persistent services (launchd on turq, systemd on pg1)
-- [ ] Multi-instance support (turq hive.toml lists both turq + mini1 OC instances)
+- [x] Multi-instance support — each `[[oc_instances]]` entry is a first-class addressable hive citizen with per-instance subscriptions, routing, and state publishing
 - [ ] Install hive skills into OC skill directories on all nodes
 - [ ] Build git-sync handler into a real sync-on-commit flow (replace 5-min timer)
 - [ ] Build sentinel handlers (check-email, check-calendar, check-services)

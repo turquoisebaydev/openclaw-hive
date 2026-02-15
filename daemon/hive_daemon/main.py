@@ -87,13 +87,18 @@ class CorrelationStore:
 
 
 def _build_topics(config: HiveConfig) -> list[str]:
-    """Build the MQTT subscription topics for this node."""
+    """Build the MQTT subscription topics for this node.
+
+    Subscribes to ``{prefix}/{name}/+`` for each managed OC instance,
+    plus the daemon node_id itself, broadcast, and wildcard command topics.
+    """
     prefix = config.topic_prefix
-    return [
-        f"{prefix}/{config.node_id}/+",  # messages addressed to this node
-        f"{prefix}/all/+",               # cluster-wide broadcasts
-        f"{prefix}/+/command",           # all outbound commands (for correlation tracking)
-    ]
+    # All addressable names: daemon node_id + each OC instance name
+    names = {config.node_id} | config.instance_names
+    topics = [f"{prefix}/{name}/+" for name in sorted(names)]
+    topics.append(f"{prefix}/all/+")               # cluster-wide broadcasts
+    topics.append(f"{prefix}/+/command")            # all outbound commands (for correlation tracking)
+    return topics
 
 
 def _parse_topic_channel(topic: str, config: HiveConfig) -> str | None:
@@ -113,6 +118,18 @@ def _parse_topic_channel(topic: str, config: HiveConfig) -> str | None:
     if parts[:len(prefix_parts)] != prefix_parts:
         return None
     return parts[-1]
+
+
+def _extract_topic_target(topic: str, config: HiveConfig) -> str:
+    """Extract the target (addressee) segment from an MQTT topic.
+
+    For ``turq/hive/mini1/command`` returns ``"mini1"``.
+    """
+    prefix_parts = config.topic_prefix.split("/")
+    topic_parts = topic.split("/")
+    if len(topic_parts) > len(prefix_parts):
+        return topic_parts[len(prefix_parts)]
+    return ""
 
 
 async def _handle_message(
@@ -138,19 +155,19 @@ async def _handle_message(
     # Track outbound commands from this node for correlation.
     # Allow self-messages on broadcast topic ("all") so that --to all
     # commands are processed by every node including the sender.
-    topic = str(msg.topic)
-    prefix_parts = config.topic_prefix.split("/")
-    topic_parts = topic.split("/")
-    target = topic_parts[len(prefix_parts)] if len(topic_parts) > len(prefix_parts) else ""
+    target = _extract_topic_target(topic, config)
 
-    if envelope.from_ == config.node_id:
+    # Self-message check: a message is "ours" if from_ matches the daemon
+    # node_id OR any of our managed OC instance names.
+    own_names = {config.node_id} | config.instance_names
+    if envelope.from_ in own_names:
         if corr_store is not None and envelope.ch == "command":
             corr_store.track(envelope)
         if target != "all":
             log.debug("ignoring own message %s", envelope.id)
             return
 
-    await router.route(envelope)
+    await router.route(envelope, target=target)
 
 
 def setup_router(
@@ -169,7 +186,19 @@ def setup_router(
     """
     router = Router()
 
-    async def _log_handler(envelope: Envelope) -> None:
+    def _resolve_instance(target: str) -> str | None:
+        """Resolve a topic target to an OC instance name.
+
+        Returns the instance_name to inject to, or None for broadcast ("all").
+        """
+        if target == "all":
+            return None  # inject to all instances
+        if target in config.instance_names:
+            return target
+        # Target may be the daemon node_id or an unknown name — inject to all
+        return None
+
+    async def _log_handler(envelope: Envelope, target: str) -> None:
         log.info("received %s message %s from %s: %s",
                  envelope.ch, envelope.id, envelope.from_, envelope.text[:80])
 
@@ -187,14 +216,15 @@ def setup_router(
 
     # --- command channel -> dispatcher (if handler exists) then OC bridge ---
     if dispatcher is not None or oc_bridge is not None:
-        async def _command_handler(envelope: Envelope) -> None:
+        async def _command_handler(envelope: Envelope, target: str) -> None:
             if dispatcher is not None and envelope.action and dispatcher.has_handler(envelope.action):
                 log.info("dispatching command action %r from %s", envelope.action, envelope.id)
                 result = await dispatcher.dispatch(envelope)
                 await _publish_dispatch_response(envelope, result)
             elif oc_bridge is not None:
-                log.info("routing command %s to OC bridge", envelope.id)
-                await oc_bridge.inject_envelope(envelope)
+                instance = _resolve_instance(target)
+                log.info("routing command %s to OC bridge (instance=%s)", envelope.id, instance)
+                await oc_bridge.inject_envelope(envelope, instance_name=instance)
             else:
                 log.info("command message %s: no dispatcher or OC bridge", envelope.id)
         router.register("command", _command_handler)
@@ -203,23 +233,25 @@ def setup_router(
 
     # --- alert channel -> OC bridge with URGENT prefix ---
     if oc_bridge is not None:
-        async def _alert_handler(envelope: Envelope) -> None:
-            log.info("routing alert %s to OC bridge (URGENT)", envelope.id)
-            await oc_bridge.inject_envelope(envelope, prefix="URGENT")
+        async def _alert_handler(envelope: Envelope, target: str) -> None:
+            instance = _resolve_instance(target)
+            log.info("routing alert %s to OC bridge (URGENT, instance=%s)", envelope.id, instance)
+            await oc_bridge.inject_envelope(envelope, prefix="URGENT", instance_name=instance)
         router.register("alert", _alert_handler)
     else:
         router.register("alert", _log_handler)
 
     # --- sync channel -> dispatcher (if handler exists) or OC bridge ---
     if dispatcher is not None or oc_bridge is not None:
-        async def _sync_handler(envelope: Envelope) -> None:
+        async def _sync_handler(envelope: Envelope, target: str) -> None:
             if dispatcher is not None and envelope.action and dispatcher.has_handler(envelope.action):
                 log.info("dispatching sync action %r from %s", envelope.action, envelope.id)
                 result = await dispatcher.dispatch(envelope)
                 await _publish_dispatch_response(envelope, result)
             elif oc_bridge is not None:
-                log.info("no handler for sync %s, falling back to OC bridge", envelope.id)
-                await oc_bridge.inject_envelope(envelope)
+                instance = _resolve_instance(target)
+                log.info("no handler for sync %s, falling back to OC bridge (instance=%s)", envelope.id, instance)
+                await oc_bridge.inject_envelope(envelope, instance_name=instance)
             else:
                 log.info("sync message %s: no dispatcher or OC bridge", envelope.id)
         router.register("sync", _sync_handler)
@@ -228,7 +260,7 @@ def setup_router(
 
     # --- heartbeat channel -> heartbeat manager ---
     if heartbeat_mgr is not None:
-        async def _heartbeat_handler(envelope: Envelope) -> None:
+        async def _heartbeat_handler(envelope: Envelope, target: str) -> None:
             heartbeat_mgr.track_peer(envelope)
         router.register("heartbeat", _heartbeat_handler)
     else:
@@ -236,28 +268,30 @@ def setup_router(
 
     # --- response channel -> enrich with original context, inject to OC ---
     if oc_bridge is not None:
-        async def _response_handler(envelope: Envelope) -> None:
+        async def _response_handler(envelope: Envelope, target: str) -> None:
+            instance = _resolve_instance(target)
             original = corr_store.match(envelope) if corr_store else None
             if original is not None:
                 prefix = f're: "{original.text[:200]}"'
                 log.info(
-                    "routing response %s to OC bridge (corr=%s, enriched with original)",
-                    envelope.id, envelope.corr,
+                    "routing response %s to OC bridge (corr=%s, enriched, instance=%s)",
+                    envelope.id, envelope.corr, instance,
                 )
-                await oc_bridge.inject_envelope(envelope, prefix=prefix)
+                await oc_bridge.inject_envelope(envelope, prefix=prefix, instance_name=instance)
             else:
-                log.info("routing response %s to OC bridge (no original context)", envelope.id)
-                await oc_bridge.inject_envelope(envelope)
+                log.info("routing response %s to OC bridge (no original context, instance=%s)", envelope.id, instance)
+                await oc_bridge.inject_envelope(envelope, instance_name=instance)
         router.register("response", _response_handler)
     else:
         router.register("response", _log_handler)
 
     # --- status -> log only (inject to OC if urgency=now) ---
     if oc_bridge is not None:
-        async def _status_handler(envelope: Envelope) -> None:
+        async def _status_handler(envelope: Envelope, target: str) -> None:
             if envelope.urgency == "now":
-                log.info("routing urgent status %s to OC bridge", envelope.id)
-                await oc_bridge.inject_envelope(envelope)
+                instance = _resolve_instance(target)
+                log.info("routing urgent status %s to OC bridge (instance=%s)", envelope.id, instance)
+                await oc_bridge.inject_envelope(envelope, instance_name=instance)
             else:
                 log.info("status from %s: %s", envelope.from_, envelope.text[:80])
         router.register("status", _status_handler)

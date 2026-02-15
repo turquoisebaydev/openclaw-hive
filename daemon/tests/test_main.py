@@ -5,9 +5,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from hive_daemon.config import HiveConfig, MqttConfig
+from hive_daemon.config import HiveConfig, MqttConfig, OcInstance
 from hive_daemon.envelope import Envelope
-from hive_daemon.main import _build_topics, _handle_message, _parse_topic_channel, setup_router
+from hive_daemon.main import (
+    _build_topics,
+    _extract_topic_target,
+    _handle_message,
+    _parse_topic_channel,
+    setup_router,
+)
 from hive_daemon.router import Router
 
 
@@ -47,12 +53,56 @@ class TestBuildTopics:
     def test_default_prefix(self):
         cfg = _config()
         topics = _build_topics(cfg)
-        assert topics == ["turq/hive/turq-18789/+", "turq/hive/all/+", "turq/hive/+/command"]
+        assert "turq/hive/turq-18789/+" in topics
+        assert "turq/hive/all/+" in topics
+        assert "turq/hive/+/command" in topics
 
     def test_custom_prefix(self):
         cfg = _config(topic_prefix="my/prefix")
         topics = _build_topics(cfg)
-        assert topics == ["my/prefix/turq-18789/+", "my/prefix/all/+", "my/prefix/+/command"]
+        assert "my/prefix/turq-18789/+" in topics
+        assert "my/prefix/all/+" in topics
+        assert "my/prefix/+/command" in topics
+
+    def test_multi_instance_subscriptions(self):
+        """Each OC instance gets its own subscription topic."""
+        cfg = _config(
+            node_id="turq",
+            oc_instances=[
+                OcInstance(name="turq", port=18789),
+                OcInstance(name="mini1", profile="mini1", port=18889),
+            ],
+        )
+        topics = _build_topics(cfg)
+        assert "turq/hive/turq/+" in topics
+        assert "turq/hive/mini1/+" in topics
+        assert "turq/hive/all/+" in topics
+        assert "turq/hive/+/command" in topics
+
+    def test_no_duplicate_when_node_id_matches_instance(self):
+        """When node_id == an instance name, no duplicate subscriptions."""
+        cfg = _config(
+            node_id="turq",
+            oc_instances=[OcInstance(name="turq")],
+        )
+        topics = _build_topics(cfg)
+        # Count occurrences of the turq subscription
+        turq_subs = [t for t in topics if t == "turq/hive/turq/+"]
+        assert len(turq_subs) == 1
+
+
+class TestExtractTopicTarget:
+    def test_normal_target(self):
+        cfg = _config()
+        assert _extract_topic_target("turq/hive/mini1/command", cfg) == "mini1"
+
+    def test_all_target(self):
+        cfg = _config()
+        assert _extract_topic_target("turq/hive/all/heartbeat", cfg) == "all"
+
+    def test_short_topic(self):
+        cfg = _config()
+        assert _extract_topic_target("turq/hive", cfg) == ""
 
 
 class TestParseTopicChannel:
@@ -83,7 +133,7 @@ class TestHandleMessage:
         router = Router()
         received = []
 
-        async def handler(env: Envelope) -> None:
+        async def handler(env: Envelope, target: str) -> None:
             received.append(env)
 
         router.register("command", handler)
@@ -112,7 +162,7 @@ class TestHandleMessage:
         router = Router()
         received = []
 
-        async def handler(env: Envelope) -> None:
+        async def handler(env: Envelope, target: str) -> None:
             received.append(env)
 
         router.register("command", handler)
@@ -121,6 +171,63 @@ class TestHandleMessage:
         msg = _mqtt_msg("turq/hive/turq-18789/command", own_payload)
         await _handle_message(msg, cfg, router)
         assert len(received) == 0
+
+    async def test_own_instance_messages_ignored(self):
+        """Messages from any managed instance name are treated as self."""
+        cfg = _config(
+            node_id="turq",
+            oc_instances=[
+                OcInstance(name="turq"),
+                OcInstance(name="mini1"),
+            ],
+        )
+        router = Router()
+        received = []
+
+        async def handler(env: Envelope, target: str) -> None:
+            received.append(env)
+
+        router.register("command", handler)
+
+        # Message from mini1 (managed instance) to turq — should be ignored
+        payload = {**VALID_PAYLOAD, "from": "mini1", "to": "turq"}
+        msg = _mqtt_msg("turq/hive/turq/command", payload)
+        await _handle_message(msg, cfg, router)
+        assert len(received) == 0
+
+    async def test_own_instance_broadcast_allowed(self):
+        """Self-messages on broadcast topic are still processed."""
+        cfg = _config(
+            node_id="turq",
+            oc_instances=[OcInstance(name="mini1")],
+        )
+        router = Router()
+        received = []
+
+        async def handler(env: Envelope, target: str) -> None:
+            received.append(env)
+
+        router.register("command", handler)
+
+        payload = {**VALID_PAYLOAD, "from": "mini1", "to": "all"}
+        msg = _mqtt_msg("turq/hive/all/command", payload)
+        await _handle_message(msg, cfg, router)
+        assert len(received) == 1
+
+    async def test_target_passed_to_router(self):
+        """The topic target is passed through to the router handler."""
+        cfg = _config()
+        router = Router()
+        targets = []
+
+        async def handler(env: Envelope, target: str) -> None:
+            targets.append(target)
+
+        router.register("command", handler)
+
+        msg = _mqtt_msg("turq/hive/turq-18789/command", VALID_PAYLOAD)
+        await _handle_message(msg, cfg, router)
+        assert targets == ["turq-18789"]
 
 
 class TestSetupRouter:

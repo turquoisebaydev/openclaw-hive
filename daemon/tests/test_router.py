@@ -18,13 +18,15 @@ class TestRouter:
         router = Router()
         received = []
 
-        async def handler(env: Envelope) -> None:
-            received.append(env)
+        async def handler(env: Envelope, target: str) -> None:
+            received.append((env, target))
 
         router.register("command", handler)
         env = _make_envelope("command")
-        await router.route(env)
-        assert received == [env]
+        await router.route(env, target="node-b")
+        assert len(received) == 1
+        assert received[0][0] is env
+        assert received[0][1] == "node-b"
 
     async def test_unregistered_channel_does_not_raise(self):
         router = Router()
@@ -37,10 +39,10 @@ class TestRouter:
         command_msgs: list[Envelope] = []
         sync_msgs: list[Envelope] = []
 
-        async def cmd_handler(env: Envelope) -> None:
+        async def cmd_handler(env: Envelope, target: str) -> None:
             command_msgs.append(env)
 
-        async def sync_handler(env: Envelope) -> None:
+        async def sync_handler(env: Envelope, target: str) -> None:
             sync_msgs.append(env)
 
         router.register("command", cmd_handler)
@@ -58,10 +60,10 @@ class TestRouter:
         first_calls: list[Envelope] = []
         second_calls: list[Envelope] = []
 
-        async def first(env: Envelope) -> None:
+        async def first(env: Envelope, target: str) -> None:
             first_calls.append(env)
 
-        async def second(env: Envelope) -> None:
+        async def second(env: Envelope, target: str) -> None:
             second_calls.append(env)
 
         router.register("alert", first)
@@ -70,3 +72,14 @@ class TestRouter:
         await router.route(_make_envelope("alert"))
         assert len(first_calls) == 0
         assert len(second_calls) == 1
+
+    async def test_target_defaults_to_empty_string(self):
+        router = Router()
+        received_targets = []
+
+        async def handler(env: Envelope, target: str) -> None:
+            received_targets.append(target)
+
+        router.register("command", handler)
+        await router.route(_make_envelope("command"))
+        assert received_targets == [""]

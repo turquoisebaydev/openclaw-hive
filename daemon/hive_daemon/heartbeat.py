@@ -111,16 +111,32 @@ class HeartbeatManager:
         log.debug("published heartbeat to %s", topic)
 
     async def publish_state(self) -> None:
-        """Publish this node's state as a retained message on the meta topic."""
-        state = {
-            "node_id": self._config.node_id,
-            "status": "online",
-            "uptime_s": round(time.monotonic() - self._start_time, 1),
-            "known_peers": list(self._peers.keys()),
-        }
-        topic = f"{self._config.topic_prefix}/meta/{self._config.node_id}/state"
-        await self._client.publish(topic, json.dumps(state), retain=True)
-        log.debug("published node state to %s", topic)
+        """Publish retained state for each managed OC instance.
+
+        Each instance gets its own ``meta/{instance_name}/state`` entry so
+        that ``hive-cli status`` sees every gateway as a first-class node.
+        Falls back to publishing a single entry for ``node_id`` when no OC
+        instances are configured.
+        """
+        uptime_s = round(time.monotonic() - self._start_time, 1)
+        known_peers = list(self._peers.keys())
+
+        instance_names = [inst.name for inst in self._config.oc_instances]
+        if not instance_names:
+            # No OC instances — publish a single daemon-level state entry.
+            instance_names = [self._config.node_id]
+
+        for name in instance_names:
+            state = {
+                "node_id": name,
+                "status": "online",
+                "uptime_s": uptime_s,
+                "known_peers": known_peers,
+                "daemon_node": self._config.node_id,
+            }
+            topic = f"{self._config.topic_prefix}/meta/{name}/state"
+            await self._client.publish(topic, json.dumps(state), retain=True)
+            log.debug("published instance state to %s", topic)
 
     def track_peer(self, envelope: Envelope) -> None:
         """Record a heartbeat from a peer node.
