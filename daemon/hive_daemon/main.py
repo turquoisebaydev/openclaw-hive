@@ -172,9 +172,21 @@ async def _handle_message(
     # commands are processed by every node including the sender.
     target = _extract_topic_target(topic, config)
 
+    # All local addressable names: daemon node_id + each managed OC instance.
+    own_names = {config.node_id} | config.instance_names
+
+    # IMPORTANT SAFETY FILTER
+    #
+    # We subscribe to {prefix}/+/command to observe *our own outbound commands*
+    # for correlation/enrichment (since hive-cli publishes directly to MQTT).
+    # Without this guard, every node would also *process* commands intended for
+    # other nodes.
+    if target not in own_names and target != "all" and envelope.from_ not in own_names:
+        log.debug("ignoring off-target message %s (target=%s from=%s)", envelope.id, target, envelope.from_)
+        return
+
     # Self-message check: a message is "ours" if from_ matches the daemon
     # node_id OR any of our managed OC instance names.
-    own_names = {config.node_id} | config.instance_names
     if envelope.from_ in own_names:
         if corr_store is not None and envelope.ch == "command":
             corr_store.track(envelope)
