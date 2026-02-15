@@ -1,3 +1,8 @@
+---
+name: hive-member
+description: Inter-gateway coordination via MQTT using hive-cli tool
+---
+
 # Hive Member — Inter-Gateway Coordination
 
 You are part of a **hive** — a cluster of independent OpenClaw gateways coordinating via MQTT. A local `hive-daemon` handles the transport; you interact through the `hive-cli` tool.
