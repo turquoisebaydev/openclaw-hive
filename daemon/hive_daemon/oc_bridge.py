@@ -113,7 +113,9 @@ class OcBridge:
         session_id = self._session_id_for_instance(instance)
 
         # Use --json so we can parse & log session/skills diagnostics.
-        # Thinking minimal keeps tool-driving deterministic for protocol glue.
+        # Thinking level note:
+        # - Some models (e.g. gpt-5.2-codex) reject "minimal" and only support
+        #   low/medium/high/xhigh. "low" is the safest cross-model default.
         cmd.extend(
             [
                 "agent",
@@ -122,7 +124,7 @@ class OcBridge:
                 "--session-id",
                 session_id,
                 "--thinking",
-                "minimal",
+                "low",
                 "--json",
                 "--message",
                 text,
