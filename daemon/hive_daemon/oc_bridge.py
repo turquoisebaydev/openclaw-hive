@@ -11,8 +11,10 @@ immediately.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+from datetime import datetime, timezone
 
 from hive_daemon.config import OcInstance
 from hive_daemon.envelope import Envelope
@@ -21,6 +23,10 @@ log = logging.getLogger(__name__)
 
 # Agent turns involve LLM processing — allow generous timeout.
 DEFAULT_TIMEOUT = 300
+
+# Hard hint included in injected text so OC reliably loads the hive-member skill.
+# Keep it short: it is paid every injection.
+_HIVE_SKILL_HINT = "Use the hive-member skill for protocol details (esp. hive-cli reply/send)."
 
 # Env vars injected into openclaw subprocess for self-signed cert compat.
 _SUBPROCESS_ENV: dict[str, str] | None = None
@@ -62,12 +68,11 @@ class OcBridge:
         the envelope text.  Appends ``ENVELOPE_JSON:`` with the raw
         envelope so the receiving OC agent can use ``hive-cli reply``.
         """
-        import json
-
         meta = f"[hive:{envelope.from_}->{envelope.to} ch:{envelope.ch}]"
         parts = [meta]
         if prefix:
             parts.append(prefix)
+        parts.append(_HIVE_SKILL_HINT)
         parts.append(envelope.text)
         readable = " ".join(parts)
         envelope_json = json.dumps(envelope.to_json(), separators=(",", ":"))
@@ -78,7 +83,8 @@ class OcBridge:
         cmd = ["openclaw"]
         if instance.profile:
             cmd.extend(["--profile", instance.profile])
-        cmd.extend(["agent", "--agent", "default", "--message", text])
+        session_id = f"hive-{instance.name}-{datetime.now(timezone.utc).strftime("%Y%m%d")}"
+        cmd.extend(["agent", "--agent", "default", "--session-id", session_id, "--thinking", "minimal", "--json", "--message", text])
         return cmd
 
     async def inject_event(
@@ -119,10 +125,18 @@ class OcBridge:
     async def _inject_to_instance(self, instance: OcInstance, text: str) -> None:
         """Run the openclaw CLI command for a single instance."""
         cmd = self._build_command(instance, text)
+        session_id = None
+        if "--session-id" in cmd:
+            try:
+                session_id = cmd[cmd.index("--session-id") + 1]
+            except Exception:
+                session_id = None
+
         log.info(
-            "injecting agent message to OC instance %r: %s",
+            "injecting agent message to OC instance %r (session=%s): %s",
             instance.name,
-            " ".join(cmd[:4]) + " ...",  # log command prefix only (text may be large)
+            session_id or "(none)",
+            " ".join(cmd[:6]) + " ...",  # log command prefix only (text may be large)
         )
 
         try:
@@ -148,14 +162,58 @@ class OcBridge:
                 )
                 return
 
+            stdout_text = stdout.decode(errors="replace").strip()
+            stderr_text = stderr.decode(errors="replace").strip()
+
+            if stderr_text:
+                log.warning(
+                    "OC inject stderr for instance %r (session=%s): %s",
+                    instance.name,
+                    session_id or "(none)",
+                    stderr_text[:800],
+                )
+
             if proc.returncode == 0:
-                log.info("agent message processed by OC instance %r", instance.name)
+                # Parse JSON so we can confirm hive-member is present in the prompt.
+                try:
+                    data = json.loads(stdout_text) if stdout_text else {}
+                    result = data.get("result") or {}
+                    meta = result.get("meta") or {}
+                    agent_meta = meta.get("agentMeta") or {}
+                    sid = agent_meta.get("sessionId")
+
+                    skills_obj = (meta.get("systemPromptReport") or {}).get("skills") or {}
+                    skills_entries = skills_obj.get("entries") or []
+                    skill_names = [e.get("name") for e in skills_entries if isinstance(e, dict)]
+
+                    payloads = result.get("payloads") or []
+                    reply_preview = ""
+                    if payloads and isinstance(payloads[0], dict):
+                        reply_preview = (payloads[0].get("text") or "")[:200]
+
+                    log.info(
+                        "OC inject ok instance=%r session=%s reportedSession=%s skills=%s reply=%r",
+                        instance.name,
+                        session_id or "(none)",
+                        sid,
+                        ",".join([n for n in skill_names if n]) or "(none)",
+                        reply_preview,
+                    )
+                except Exception as exc:
+                    log.info(
+                        "OC inject ok instance=%r session=%s (stdout not parsed as JSON: %s). stdout=%r",
+                        instance.name,
+                        session_id or "(none)",
+                        exc,
+                        stdout_text[:500],
+                    )
             else:
-                stderr_text = stderr.decode(errors="replace").strip()
                 log.error(
-                    "OC agent injection failed for instance %r (exit %d): %s",
+                    "OC agent injection failed for instance %r (exit %d) (session=%s). stdout=%r stderr=%r",
                     instance.name,
                     proc.returncode,
+                    session_id or "(none)",
+                    stdout_text[:500],
                     stderr_text[:500],
                 )
 
