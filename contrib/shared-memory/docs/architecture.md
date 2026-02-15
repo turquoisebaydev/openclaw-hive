@@ -74,7 +74,7 @@ The file is added to the bootstrap file list alongside AGENTS.md, SOUL.md, etc. 
 
 ## Server
 - Hostname: turq-playground
-- IP: 10.0.20.9
+- IP: <mqtt-broker-ip>
 - OS: Ubuntu Linux
 
 ## Capabilities

@@ -14,7 +14,7 @@
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/turquoise/Projects/openclaw-hive</string>
+    <string>/ABS/PATH/TO/openclaw-hive</string>
 
     <key>RunAtLoad</key>
     <true/>
@@ -23,10 +23,10 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/turquoise/Library/Logs/hive-daemon.log</string>
+    <string>/ABS/PATH/TO/hive-daemon.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/turquoise/Library/Logs/hive-daemon.log</string>
+    <string>/ABS/PATH/TO/hive-daemon.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>

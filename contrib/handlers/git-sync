@@ -8,10 +8,10 @@ success/failure status.
 Config file (default ~/.config/hive/git-sync.toml):
 
     [[repos]]
-    path = "/Users/turquoise/Projects/myrepo"
+    path = "/path/to/myrepo"
 
     [[repos]]
-    path = "/Users/turquoise/Projects/another"
+    path = "/path/to/another"
 
 Handler contract:
     - Receives full envelope JSON on stdin
