@@ -47,12 +47,12 @@ class TestBuildTopics:
     def test_default_prefix(self):
         cfg = _config()
         topics = _build_topics(cfg)
-        assert topics == ["turq/hive/turq-18789/+", "turq/hive/all/+"]
+        assert topics == ["turq/hive/turq-18789/+", "turq/hive/all/+", "turq/hive/+/command"]
 
     def test_custom_prefix(self):
         cfg = _config(topic_prefix="my/prefix")
         topics = _build_topics(cfg)
-        assert topics == ["my/prefix/turq-18789/+", "my/prefix/all/+"]
+        assert topics == ["my/prefix/turq-18789/+", "my/prefix/all/+", "my/prefix/+/command"]
 
 
 class TestParseTopicChannel:

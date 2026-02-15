@@ -92,6 +92,7 @@ def _build_topics(config: HiveConfig) -> list[str]:
     return [
         f"{prefix}/{config.node_id}/+",  # messages addressed to this node
         f"{prefix}/all/+",               # cluster-wide broadcasts
+        f"{prefix}/+/command",           # all outbound commands (for correlation tracking)
     ]
 
 
