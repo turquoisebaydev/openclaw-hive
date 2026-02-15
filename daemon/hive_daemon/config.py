@@ -25,6 +25,8 @@ class OcInstance:
     name: str
     profile: str | None = None
     port: int | None = None
+    # OpenClaw agent id to target for hive injections (e.g. "main" or "default").
+    agent_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +90,7 @@ def load_config(path: Path) -> HiveConfig:
             name=inst["name"],
             profile=inst.get("profile"),
             port=inst.get("port"),
+            agent_id=inst.get("agent_id") or inst.get("agent"),
         ))
 
     hb_section = raw.get("heartbeat", {})

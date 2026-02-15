@@ -40,6 +40,11 @@ def _get_subprocess_env() -> dict[str, str]:
     return _SUBPROCESS_ENV
 
 
+def _is_unknown_agent_id_error(text: str) -> bool:
+    # OpenClaw emits: `Error: Unknown agent id "main". Use "openclaw agents list"...`
+    return "Unknown agent id" in (text or "")
+
+
 class OcBridge:
     """Bridges hive messages into local OpenClaw instances via CLI.
 
@@ -59,6 +64,9 @@ class OcBridge:
     ) -> None:
         self._instances = oc_instances
         self._timeout = timeout
+        # Cache resolved agent ids per instance name (only used when agent_id is
+        # not explicitly configured). Prevents repeated "Unknown agent id" fails.
+        self._resolved_agent_id: dict[str, str] = {}
 
     @staticmethod
     def format_event_text(envelope: Envelope, prefix: str = "") -> str:
@@ -96,7 +104,7 @@ class OcBridge:
         day = datetime.now(timezone.utc).strftime("%Y%m%d")
         return f"hive-{instance.name}-{day}"
 
-    def _build_command(self, instance: OcInstance, text: str) -> list[str]:
+    def _build_command(self, instance: OcInstance, text: str, agent_id: str) -> list[str]:
         """Build the openclaw CLI command for a given instance."""
         cmd = ["openclaw"]
         if instance.profile:
@@ -110,7 +118,7 @@ class OcBridge:
             [
                 "agent",
                 "--agent",
-                "main",
+                agent_id,
                 "--session-id",
                 session_id,
                 "--thinking",
@@ -159,17 +167,26 @@ class OcBridge:
 
     async def _inject_to_instance(self, instance: OcInstance, text: str) -> None:
         """Run the openclaw CLI command for a single instance."""
-        cmd = self._build_command(instance, text)
         session_id = self._session_id_for_instance(instance)
 
-        log.info(
-            "injecting agent message to OC instance %r (session=%s): %s",
-            instance.name,
-            session_id,
-            " ".join(cmd[:6]) + " ...",  # log command prefix only (text may be large)
-        )
+        # Sensible default:
+        # - If instance.agent_id is configured, use it.
+        # - Else try "main" first (common on dev machines).
+        # - If OpenClaw reports "Unknown agent id", retry once with "default"
+        #   (common on servers) and cache the result for next time.
+        agent_id = instance.agent_id or self._resolved_agent_id.get(instance.name) or "main"
 
-        try:
+        async def run_with(agent: str) -> tuple[int, str, str] | None:
+            cmd = self._build_command(instance, text, agent)
+
+            log.info(
+                "injecting agent message to OC instance %r (session=%s agent=%s): %s",
+                instance.name,
+                session_id,
+                agent,
+                " ".join(cmd[:6]) + " ...",  # log command prefix only (text may be large)
+            )
+
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -186,25 +203,55 @@ class OcBridge:
                 proc.kill()
                 await proc.wait()
                 log.error(
-                    "OC agent injection timed out for instance %r after %ds (session=%s)",
+                    "OC agent injection timed out for instance %r after %ds (session=%s agent=%s)",
                     instance.name,
                     self._timeout,
                     session_id,
+                    agent,
                 )
-                return
+                return None
 
             stdout_text = stdout.decode(errors="replace").strip()
             stderr_text = stderr.decode(errors="replace").strip()
+            return proc.returncode, stdout_text, stderr_text
+
+        try:
+            res = await run_with(agent_id)
+            if res is None:
+                return
+            rc, stdout_text, stderr_text = res
+
+            if (
+                rc != 0
+                and instance.agent_id is None
+                and agent_id != "default"
+                and _is_unknown_agent_id_error(stderr_text + "\n" + stdout_text)
+            ):
+                log.info(
+                    "agent id %r not found for instance %r; retrying with 'default'",
+                    agent_id,
+                    instance.name,
+                )
+                agent_id = "default"
+                res2 = await run_with(agent_id)
+                if res2 is None:
+                    return
+                rc, stdout_text, stderr_text = res2
+                if rc == 0:
+                    self._resolved_agent_id[instance.name] = agent_id
+            elif rc == 0 and instance.agent_id is None:
+                self._resolved_agent_id.setdefault(instance.name, agent_id)
 
             if stderr_text:
                 log.warning(
-                    "OC inject stderr for instance %r (session=%s): %s",
+                    "OC inject stderr for instance %r (session=%s agent=%s): %s",
                     instance.name,
                     session_id,
+                    agent_id,
                     stderr_text[:800],
                 )
 
-            if proc.returncode == 0:
+            if rc == 0:
                 # Parse JSON so we can confirm hive-member is present in the prompt.
                 try:
                     data = json.loads(stdout_text)
@@ -223,27 +270,30 @@ class OcBridge:
                         reply_preview = (payloads[0].get("text") or "")[:200]
 
                     log.info(
-                        "OC inject ok instance=%r session=%s reportedSession=%s skills=%s reply=%r",
+                        "OC inject ok instance=%r session=%s agent=%s reportedSession=%s skills=%s reply=%r",
                         instance.name,
                         session_id,
+                        agent_id,
                         sid,
                         ",".join([s for s in skill_names if s]) or "(none)",
                         reply_preview,
                     )
                 except Exception as exc:
                     log.info(
-                        "OC inject ok instance=%r session=%s (stdout not parsed as JSON: %s). stdout=%r",
+                        "OC inject ok instance=%r session=%s agent=%s (stdout not parsed as JSON: %s). stdout=%r",
                         instance.name,
                         session_id,
+                        agent_id,
                         exc,
                         stdout_text[:500],
                     )
             else:
                 log.error(
-                    "OC agent injection failed for instance %r (session=%s) (exit %d). stdout=%r stderr=%r",
+                    "OC agent injection failed for instance %r (session=%s agent=%s) (exit %d). stdout=%r stderr=%r",
                     instance.name,
                     session_id,
-                    proc.returncode,
+                    agent_id,
+                    rc,
                     stdout_text[:500],
                     stderr_text[:500],
                 )
