@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""hive handler: ping
+
+Simple health-check handler. Returns pong.
+
+Handler contract:
+    - Receives full envelope JSON on stdin
+    - Prints JSON result to stdout
+    - Exit 0 on success
+"""
+
+import json
+import sys
+
+
+def main() -> None:
+    # Consume envelope from stdin (handler contract)
+    _envelope = sys.stdin.read()
+    print(json.dumps({"status": "ok", "response": "pong"}))
+
+
+if __name__ == "__main__":
+    main()

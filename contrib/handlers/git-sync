@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""hive handler: git-sync
+
+Reads a list of repositories from a TOML config file and performs
+`git pull` in each directory. Returns a JSON result with per-repo
+success/failure status.
+
+Config file (default ~/.config/hive/git-sync.toml):
+
+    [[repos]]
+    path = "/Users/turquoise/Projects/myrepo"
+
+    [[repos]]
+    path = "/Users/turquoise/Projects/another"
+
+Handler contract:
+    - Receives full envelope JSON on stdin
+    - Prints JSON result to stdout
+    - Exit 0 on success (even if individual repos fail)
+    - Exit 1 on fatal error (config missing, etc.)
+"""
+
+import json
+import os
+import subprocess
+import sys
+
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib  # type: ignore[no-redef]
+
+DEFAULT_CONFIG = os.path.expanduser("~/.config/hive/git-sync.toml")
+
+
+def load_config(path: str) -> list[dict]:
+    """Load repo list from TOML config."""
+    with open(path, "rb") as f:
+        data = tomllib.load(f)
+    return data.get("repos", [])
+
+
+def pull_repo(path: str) -> dict:
+    """Run git pull in the given directory and return a result dict."""
+    path = os.path.expanduser(path)
+    if not os.path.isdir(path):
+        return {"path": path, "ok": False, "error": "directory not found"}
+    if not os.path.isdir(os.path.join(path, ".git")):
+        return {"path": path, "ok": False, "error": "not a git repository"}
+    try:
+        result = subprocess.run(
+            ["git", "pull", "--ff-only"],
+            cwd=path,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode == 0:
+            return {"path": path, "ok": True, "output": result.stdout.strip()}
+        else:
+            return {"path": path, "ok": False, "error": result.stderr.strip()}
+    except subprocess.TimeoutExpired:
+        return {"path": path, "ok": False, "error": "git pull timed out"}
+    except Exception as e:
+        return {"path": path, "ok": False, "error": str(e)}
+
+
+def main() -> None:
+    # Consume envelope from stdin (handler contract)
+    _envelope = sys.stdin.read()
+
+    # Determine config path (allow override via env var)
+    config_path = os.environ.get("HIVE_GIT_SYNC_CONFIG", DEFAULT_CONFIG)
+
+    if not os.path.isfile(config_path):
+        print(json.dumps({"ok": False, "error": f"config not found: {config_path}"}))
+        sys.exit(1)
+
+    repos = load_config(config_path)
+    if not repos:
+        print(json.dumps({"ok": True, "repos": [], "note": "no repos configured"}))
+        return
+
+    results = [pull_repo(r["path"]) for r in repos if "path" in r]
+    all_ok = all(r["ok"] for r in results)
+
+    print(json.dumps({
+        "ok": all_ok,
+        "repos": results,
+        "synced": sum(1 for r in results if r["ok"]),
+        "failed": sum(1 for r in results if not r["ok"]),
+    }))
+
+
+if __name__ == "__main__":
+    main()
