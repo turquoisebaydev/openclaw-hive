@@ -28,6 +28,14 @@ class OcInstance:
 
 
 @dataclass(frozen=True, slots=True)
+class HeartbeatConfig:
+    """Heartbeat timing settings."""
+
+    interval: float = 5.0
+    miss_threshold: int = 3
+
+
+@dataclass(frozen=True, slots=True)
 class HiveConfig:
     """Top-level hive daemon configuration."""
 
@@ -37,6 +45,7 @@ class HiveConfig:
     handler_timeout: int = 30
     mqtt: MqttConfig = field(default_factory=MqttConfig)
     oc_instances: list[OcInstance] = field(default_factory=list)
+    heartbeat: HeartbeatConfig = field(default_factory=HeartbeatConfig)
     log_level: str = "INFO"
 
 
@@ -69,6 +78,12 @@ def load_config(path: Path) -> HiveConfig:
             port=inst.get("port"),
         ))
 
+    hb_section = raw.get("heartbeat", {})
+    heartbeat = HeartbeatConfig(
+        interval=hb_section.get("interval", 5.0),
+        miss_threshold=hb_section.get("miss_threshold", 3),
+    )
+
     return HiveConfig(
         node_id=node_id,
         topic_prefix=node_section.get("topic_prefix", "turq/hive"),
@@ -76,5 +91,6 @@ def load_config(path: Path) -> HiveConfig:
         handler_timeout=node_section.get("handler_timeout", 30),
         mqtt=mqtt,
         oc_instances=oc_list,
+        heartbeat=heartbeat,
         log_level=raw.get("logging", {}).get("level", "INFO"),
     )
