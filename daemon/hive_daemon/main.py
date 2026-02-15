@@ -137,6 +137,7 @@ async def _handle_message(
     config: HiveConfig,
     router: Router,
     corr_store: CorrelationStore | None = None,
+    seen_ids: set[str] | None = None,
 ) -> None:
     """Parse an MQTT message into an Envelope and route it."""
     topic = str(msg.topic)
@@ -151,6 +152,20 @@ async def _handle_message(
     except EnvelopeError as exc:
         log.error("invalid envelope on topic %s: %s", topic, exc)
         return
+
+    # Deduplicate: overlapping subscriptions (e.g. turq/hive/pg1/+ and
+    # turq/hive/+/command) can deliver the same message twice.
+    if seen_ids is not None:
+        if envelope.id in seen_ids:
+            log.debug("dedup: already processed %s", envelope.id)
+            return
+        seen_ids.add(envelope.id)
+        # Cap the set size to avoid unbounded growth.
+        if len(seen_ids) > 10_000:
+            # Discard oldest half (sets are unordered, but this is good enough).
+            to_remove = list(seen_ids)[:5_000]
+            for item in to_remove:
+                seen_ids.discard(item)
 
     # Track outbound commands from this node for correlation.
     # Allow self-messages on broadcast topic ("all") so that --to all
@@ -364,10 +379,11 @@ async def run_daemon(config: HiveConfig) -> None:
                         await client.subscribe(topic)
                         log.info("subscribed to %s", topic)
 
+                    seen_ids: set[str] = set()
                     async for msg in client.messages:
                         if shutdown.is_set():
                             break
-                        await _handle_message(msg, config, router, corr_store)
+                        await _handle_message(msg, config, router, corr_store, seen_ids)
                 finally:
                     await heartbeat_mgr.stop()
 
