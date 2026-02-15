@@ -135,12 +135,20 @@ async def _handle_message(
         log.error("invalid envelope on topic %s: %s", topic, exc)
         return
 
-    # Track outbound commands from this node for correlation
+    # Track outbound commands from this node for correlation.
+    # Allow self-messages on broadcast topic ("all") so that --to all
+    # commands are processed by every node including the sender.
+    topic = str(msg.topic)
+    prefix_parts = config.topic_prefix.split("/")
+    topic_parts = topic.split("/")
+    target = topic_parts[len(prefix_parts)] if len(topic_parts) > len(prefix_parts) else ""
+
     if envelope.from_ == config.node_id:
         if corr_store is not None and envelope.ch == "command":
             corr_store.track(envelope)
-        log.debug("ignoring own message %s", envelope.id)
-        return
+        if target != "all":
+            log.debug("ignoring own message %s", envelope.id)
+            return
 
     await router.route(envelope)
 
@@ -164,11 +172,17 @@ def setup_router(
         log.info("received %s message %s from %s: %s",
                  envelope.ch, envelope.id, envelope.from_, envelope.text[:80])
 
-    # --- command channel -> OC bridge ---
-    if oc_bridge is not None:
+    # --- command channel -> dispatcher (if handler exists) then OC bridge ---
+    if dispatcher is not None or oc_bridge is not None:
         async def _command_handler(envelope: Envelope) -> None:
-            log.info("routing command %s to OC bridge", envelope.id)
-            await oc_bridge.inject_envelope(envelope)
+            if dispatcher is not None and envelope.action and dispatcher.has_handler(envelope.action):
+                log.info("dispatching command action %r from %s", envelope.action, envelope.id)
+                await dispatcher.dispatch(envelope)
+            elif oc_bridge is not None:
+                log.info("routing command %s to OC bridge", envelope.id)
+                await oc_bridge.inject_envelope(envelope)
+            else:
+                log.info("command message %s: no dispatcher or OC bridge", envelope.id)
         router.register("command", _command_handler)
     else:
         router.register("command", _log_handler)
