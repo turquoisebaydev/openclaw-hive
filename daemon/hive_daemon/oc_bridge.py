@@ -114,8 +114,8 @@ class OcBridge:
 
         # Use --json so we can parse & log session/skills diagnostics.
         # Thinking level note:
-        # - Some models (e.g. gpt-5.2-codex) reject "minimal" and only support
-        #   low/medium/high/xhigh. "low" is the safest cross-model default.
+        # - Not all models support the lowest/legacy thinking settings.
+        # - "low" is the safest cross-model default.
         cmd.extend(
             [
                 "agent",
