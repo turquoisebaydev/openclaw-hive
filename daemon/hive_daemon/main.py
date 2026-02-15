@@ -188,16 +188,26 @@ async def _handle_message(
     # Self-message check: a message is "ours" if from_ matches the daemon
     # node_id OR any of our managed OC instance names.
     #
-    # IMPORTANT: allow cross-instance messages within this daemon.
-    # e.g. turq -> mini1 should be processed (different OC instances,
-    # same daemon). Only drop if the target is NOT another local instance
-    # (i.e. the message appeared via the wildcard subscription for a
-    # remote node) or if the target is the sender itself.
+    # We subscribe to {prefix}/+/command for correlation tracking, so we will
+    # see our own outbound commands. We must ignore those to avoid executing
+    # commands intended for remote nodes.
+    #
+    # However, this daemon may manage multiple OC instances (e.g. turq + mini1).
+    # In that case, self-originated *command* messages addressed to a local
+    # instance (or broadcast "all") are valid and should be processed.
     if envelope.from_ in own_names:
         if corr_store is not None and envelope.ch == "command":
             corr_store.track(envelope)
-        if (target not in own_names or target == envelope.from_) and target != "all":
-            log.debug("ignoring own message %s (target=%s)", envelope.id, target)
+
+        # Ignore all self-originated non-command messages (heartbeats, responses,
+        # meta state echoes, etc.) to prevent feedback loops.
+        if envelope.ch != "command":
+            log.debug("ignoring own non-command message %s (ch=%s target=%s)", envelope.id, envelope.ch, target)
+            return
+
+        # For commands: only process if addressed to a local instance or broadcast.
+        if target not in own_names and target != "all":
+            log.debug("ignoring own command %s for non-local target=%s", envelope.id, target)
             return
 
     await router.route(envelope, target=target)
@@ -241,7 +251,11 @@ def setup_router(
             return
         from hive_daemon.envelope import create_reply
         text = result.stdout.strip() if result.success else f"FAILED (exit {result.exit_code}): {result.stderr.strip()}"
-        reply = create_reply(envelope, from_=config.node_id, text=text)
+        # Make the responder identity match the addressed local instance when possible.
+        # This keeps pings readable in multi-instance mode (e.g. turq vs mini1).
+        local_names = {config.node_id} | config.instance_names
+        responder = envelope.to if envelope.to in local_names and envelope.to != "all" else config.node_id
+        reply = create_reply(envelope, from_=responder, text=text)
         topic = f"{config.topic_prefix}/{envelope.from_}/response"
         payload = json.dumps(reply.to_json())
         await mqtt_client.publish(topic, payload)
