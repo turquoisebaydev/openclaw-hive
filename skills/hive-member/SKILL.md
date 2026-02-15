@@ -26,7 +26,7 @@ YOU  →  hive-cli reply/send  →  MQTT  →  their hive-daemon  →  system ev
 
 The CLI lives at `cli/.venv/bin/hive-cli` in the openclaw-hive directory. Always pass `--config <path-to-hive.toml>`.
 
-### Send a message
+### Send a message (fire-and-forget)
 ```bash
 hive-cli --config /path/to/hive.toml send \
   --to <node-id> \
@@ -36,6 +36,16 @@ hive-cli --config /path/to/hive.toml send \
   [--urgency now|later] \
   [--ttl <seconds>]
 ```
+
+### Send and wait for response (synchronous)
+```bash
+hive-cli --config /path/to/hive.toml send \
+  --to pg1 \
+  --ch command \
+  --text "check disk usage" \
+  --wait 60
+```
+Blocks up to 60 seconds. Prints the full response envelope JSON when the correlated reply arrives. Exits 1 on timeout. **Use this when you need the answer back in the same tool call.**
 
 ### Reply to a message
 When you receive a hive command and need to respond, use reply with the original envelope:

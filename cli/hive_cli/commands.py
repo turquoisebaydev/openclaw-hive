@@ -40,6 +40,41 @@ async def _publish(cfg: HiveConfig, topic: str, payload: str) -> None:
         await client.publish(topic, payload.encode())
 
 
+async def _publish_and_wait(
+    cfg: HiveConfig,
+    topic: str,
+    payload: str,
+    corr: str,
+    wait_timeout: float,
+) -> Envelope | None:
+    """Publish a message and block until a correlated response arrives.
+
+    Subscribes to the sender's response topic, publishes the message,
+    then waits up to ``wait_timeout`` seconds for a response whose
+    ``corr`` field matches. Returns the response Envelope or None on timeout.
+    """
+    response_topic = f"{cfg.topic_prefix}/{cfg.node_id}/response"
+    async with _mqtt_client(cfg) as client:
+        await client.subscribe(response_topic)
+        # Also subscribe to broadcast responses
+        await client.subscribe(f"{cfg.topic_prefix}/all/response")
+        # Publish after subscribing so we don't miss a fast reply
+        await client.publish(topic, payload.encode())
+        try:
+            async with asyncio.timeout(wait_timeout):
+                async for message in client.messages:
+                    try:
+                        data = json.loads(message.payload.decode())
+                        env = Envelope.from_json(data)
+                    except (json.JSONDecodeError, UnicodeDecodeError, Exception):
+                        continue
+                    if env.corr == corr:
+                        return env
+        except TimeoutError:
+            return None
+    return None
+
+
 async def _read_retained(cfg: HiveConfig, topic_filter: str, timeout: float = 2.0) -> list[dict]:
     """Subscribe to a topic, collect retained messages, then return.
 
@@ -68,10 +103,16 @@ async def _read_retained(cfg: HiveConfig, topic_filter: str, timeout: float = 2.
 @click.option("--action", default=None, help="Action name for handler dispatch.")
 @click.option("--urgency", default="now", type=click.Choice(sorted(VALID_URGENCIES)), help="Message urgency.")
 @click.option("--ttl", default=None, type=int, help="Time-to-live in seconds.")
+@click.option("--wait", "wait_timeout", default=None, type=float, help="Block up to N seconds for a correlated response.")
 @click.pass_context
-def send(ctx: click.Context, to_node: str, channel: str, text: str, action: str | None, urgency: str, ttl: int | None) -> None:
-    """Publish an envelope to MQTT."""
+def send(ctx: click.Context, to_node: str, channel: str, text: str, action: str | None, urgency: str, ttl: int | None, wait_timeout: float | None) -> None:
+    """Publish an envelope to MQTT.
+
+    With --wait, blocks until a correlated response arrives (or timeout).
+    Prints the response envelope JSON on success, exits 1 on timeout.
+    """
     cfg = _get_config(ctx)
+    # Use corr = envelope id so the responder's create_reply sets corr automatically
     env = create_envelope(
         from_=cfg.node_id,
         to=to_node,
@@ -83,8 +124,20 @@ def send(ctx: click.Context, to_node: str, channel: str, text: str, action: str 
     )
     topic = f"{cfg.topic_prefix}/{to_node}/{channel}"
     payload = json.dumps(env.to_json())
-    asyncio.run(_publish(cfg, topic, payload))
-    click.echo(f"sent {env.id} -> {topic}")
+
+    if wait_timeout is not None:
+        # Synchronous send-and-wait: block for correlated response
+        corr = env.id  # create_reply uses original.corr or original.id
+        response = asyncio.run(_publish_and_wait(cfg, topic, payload, corr, wait_timeout))
+        if response is not None:
+            click.echo(json.dumps(response.to_json(), indent=2))
+        else:
+            click.echo(f"timeout: no response for {env.id} after {wait_timeout}s", err=True)
+            ctx.exit(1)
+    else:
+        # Fire-and-forget
+        asyncio.run(_publish(cfg, topic, payload))
+        click.echo(f"sent {env.id} -> {topic}")
 
 
 @click.command()

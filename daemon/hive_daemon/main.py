@@ -8,6 +8,8 @@ import json
 import logging
 import signal
 import sys
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import aiomqtt
@@ -20,6 +22,68 @@ from hive_daemon.oc_bridge import OcBridge
 from hive_daemon.router import Router
 
 log = logging.getLogger("hive_daemon")
+
+
+@dataclass
+class PendingCommand:
+    """A command we observed being sent, awaiting a correlated response."""
+
+    corr: str
+    to: str
+    text: str
+    ts: float  # monotonic time for expiry
+
+
+class CorrelationStore:
+    """Tracks outbound commands so inbound responses can be enriched.
+
+    The daemon passively observes all messages on MQTT — when it sees a
+    command sent FROM this node, it stores the corr/text. When a response
+    arrives matching that corr, it provides the original context.
+
+    Entries expire after ``ttl`` seconds (default 1 hour).
+    """
+
+    def __init__(self, ttl: float = 3600.0) -> None:
+        self._pending: dict[str, PendingCommand] = {}
+        self._ttl = ttl
+
+    def track(self, envelope: Envelope) -> None:
+        """Record an outbound command for correlation tracking."""
+        # Use envelope.corr if set, otherwise use envelope.id
+        # (create_reply uses original.corr or original.id as corr)
+        corr = envelope.corr or envelope.id
+        self._pending[corr] = PendingCommand(
+            corr=corr,
+            to=envelope.to,
+            text=envelope.text[:500],  # truncate for sanity
+            ts=time.monotonic(),
+        )
+        log.debug("tracking outbound command corr=%s to=%s", corr, envelope.to)
+        self._prune()
+
+    def match(self, envelope: Envelope) -> PendingCommand | None:
+        """Look up the original command for a correlated response.
+
+        Returns the PendingCommand and removes it from the store,
+        or None if no match / expired.
+        """
+        if not envelope.corr:
+            return None
+        pending = self._pending.pop(envelope.corr, None)
+        if pending is None:
+            return None
+        if time.monotonic() - pending.ts > self._ttl:
+            log.debug("corr=%s expired, discarding", envelope.corr)
+            return None
+        return pending
+
+    def _prune(self) -> None:
+        """Remove expired entries."""
+        now = time.monotonic()
+        expired = [k for k, v in self._pending.items() if now - v.ts > self._ttl]
+        for k in expired:
+            del self._pending[k]
 
 
 def _build_topics(config: HiveConfig) -> list[str]:
@@ -54,6 +118,7 @@ async def _handle_message(
     msg: aiomqtt.Message,
     config: HiveConfig,
     router: Router,
+    corr_store: CorrelationStore | None = None,
 ) -> None:
     """Parse an MQTT message into an Envelope and route it."""
     topic = str(msg.topic)
@@ -69,8 +134,10 @@ async def _handle_message(
         log.error("invalid envelope on topic %s: %s", topic, exc)
         return
 
-    # Ignore messages from ourselves
+    # Track outbound commands from this node for correlation
     if envelope.from_ == config.node_id:
+        if corr_store is not None and envelope.ch == "command":
+            corr_store.track(envelope)
         log.debug("ignoring own message %s", envelope.id)
         return
 
@@ -83,6 +150,7 @@ def setup_router(
     heartbeat_mgr: HeartbeatManager | None = None,
     oc_bridge: OcBridge | None = None,
     dispatcher: Dispatcher | None = None,
+    corr_store: CorrelationStore | None = None,
 ) -> Router:
     """Create a Router with channel handlers.
 
@@ -136,9 +204,35 @@ def setup_router(
     else:
         router.register("heartbeat", _log_handler)
 
-    # --- status and response -> log only ---
-    router.register("status", _log_handler)
-    router.register("response", _log_handler)
+    # --- response channel -> enrich with original context, inject to OC ---
+    if oc_bridge is not None:
+        async def _response_handler(envelope: Envelope) -> None:
+            original = corr_store.match(envelope) if corr_store else None
+            if original is not None:
+                prefix = f're: "{original.text[:200]}"'
+                log.info(
+                    "routing response %s to OC bridge (corr=%s, enriched with original)",
+                    envelope.id, envelope.corr,
+                )
+                await oc_bridge.inject_envelope(envelope, prefix=prefix)
+            else:
+                log.info("routing response %s to OC bridge (no original context)", envelope.id)
+                await oc_bridge.inject_envelope(envelope)
+        router.register("response", _response_handler)
+    else:
+        router.register("response", _log_handler)
+
+    # --- status -> log only (inject to OC if urgency=now) ---
+    if oc_bridge is not None:
+        async def _status_handler(envelope: Envelope) -> None:
+            if envelope.urgency == "now":
+                log.info("routing urgent status %s to OC bridge", envelope.id)
+                await oc_bridge.inject_envelope(envelope)
+            else:
+                log.info("status from %s: %s", envelope.from_, envelope.text[:80])
+        router.register("status", _status_handler)
+    else:
+        router.register("status", _log_handler)
 
     return router
 
@@ -161,6 +255,9 @@ async def run_daemon(config: HiveConfig) -> None:
 
     # Set up OC bridge
     oc_bridge = OcBridge(config.oc_instances) if config.oc_instances else None
+
+    # Correlation store for enriching responses with original command context
+    corr_store = CorrelationStore()
 
     while not shutdown.is_set():
         try:
@@ -192,6 +289,7 @@ async def run_daemon(config: HiveConfig) -> None:
                     heartbeat_mgr=heartbeat_mgr,
                     oc_bridge=oc_bridge,
                     dispatcher=dispatcher,
+                    corr_store=corr_store,
                 )
 
                 heartbeat_mgr.start()
@@ -204,7 +302,7 @@ async def run_daemon(config: HiveConfig) -> None:
                     async for msg in client.messages:
                         if shutdown.is_set():
                             break
-                        await _handle_message(msg, config, router)
+                        await _handle_message(msg, config, router, corr_store)
                 finally:
                     await heartbeat_mgr.stop()
 

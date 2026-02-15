@@ -24,7 +24,7 @@ These read retained MQTT messages published by each node's daemon — always up 
 
 ## Delegating Work
 
-### Send a task to a specific node
+### Send a task to a specific node (fire-and-forget)
 ```bash
 hive-cli --config /path/to/hive.toml send \
   --to pg1 \
@@ -32,6 +32,16 @@ hive-cli --config /path/to/hive.toml send \
   --text "Generate meural images for tomorrow. Theme: 'Tired parents'. Use nano-banana-pro." \
   --urgency now
 ```
+
+### Send and wait for the result (synchronous)
+```bash
+hive-cli --config /path/to/hive.toml send \
+  --to pg1 \
+  --ch command \
+  --text "Check disk usage and report" \
+  --wait 120
+```
+Blocks up to 120 seconds, returns the full response envelope JSON. **Use this for tasks where you need the answer before continuing.** The response includes `corr` and `replyTo` linking back to your original message.
 
 ### Trigger a deterministic action (no LLM needed on the remote end)
 ```bash
