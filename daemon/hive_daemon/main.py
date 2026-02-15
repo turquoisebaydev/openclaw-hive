@@ -187,11 +187,17 @@ async def _handle_message(
 
     # Self-message check: a message is "ours" if from_ matches the daemon
     # node_id OR any of our managed OC instance names.
+    #
+    # IMPORTANT: allow cross-instance messages within this daemon.
+    # e.g. turq -> mini1 should be processed (different OC instances,
+    # same daemon). Only drop if the target is NOT another local instance
+    # (i.e. the message appeared via the wildcard subscription for a
+    # remote node) or if the target is the sender itself.
     if envelope.from_ in own_names:
         if corr_store is not None and envelope.ch == "command":
             corr_store.track(envelope)
-        if target != "all":
-            log.debug("ignoring own message %s", envelope.id)
+        if (target not in own_names or target == envelope.from_) and target != "all":
+            log.debug("ignoring own message %s (target=%s)", envelope.id, target)
             return
 
     await router.route(envelope, target=target)
