@@ -1,7 +1,7 @@
 """OpenClaw agent turn injection bridge.
 
 Injects hive messages into local OpenClaw instances by running
-``openclaw [--profile X] agent --agent default --message "..."`` as a subprocess.
+``openclaw [--profile X] agent --agent main --message "..."`` as a subprocess.
 
 Previous versions used ``system event`` which only queues text passively;
 the ``agent`` command triggers a real LLM turn so the message is processed
@@ -43,7 +43,7 @@ def _get_subprocess_env() -> dict[str, str]:
 class OcBridge:
     """Bridges hive messages into local OpenClaw instances via CLI.
 
-    Runs ``openclaw agent --agent default --message ...`` as an async
+    Runs ``openclaw agent --agent main --message ...`` as an async
     subprocess for each configured OC instance.  This triggers a real
     agent turn so the gateway processes the message immediately.
 
@@ -84,7 +84,7 @@ class OcBridge:
         if instance.profile:
             cmd.extend(["--profile", instance.profile])
         session_id = f"hive-{instance.name}-{datetime.now(timezone.utc).strftime("%Y%m%d")}"
-        cmd.extend(["agent", "--agent", "default", "--session-id", session_id, "--thinking", "minimal", "--json", "--message", text])
+        cmd.extend(["agent", "--agent", "main", "--session-id", session_id, "--thinking", "minimal", "--json", "--message", text])
         return cmd
 
     async def inject_event(
