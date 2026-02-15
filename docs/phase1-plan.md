@@ -75,7 +75,7 @@
 ## Live Verification (2026-02-16)
 
 - [x] turq daemon running (Mac mini, `~/Projects/openclaw-hive/`)
-- [x] pg1 daemon running (turq-playground, `/home/turq/openclaw-hive/`)
+- [x] pg1 daemon running (<host>, `$HOME/openclaw-hive/`)
 - [x] Mutual heartbeat discovery (turq ↔ pg1 within seconds)
 - [x] turq → pg1 command: routed through OC bridge, injected into pg1 OpenClaw ✅
 - [x] pg1 → turq command: received by turq daemon, injected into turq OpenClaw ✅

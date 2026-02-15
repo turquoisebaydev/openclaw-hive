@@ -307,7 +307,7 @@ INPUT=$(cat)
 COMMIT=$(echo "$INPUT" | jq -r '.commit // empty')
 
 RESULTS=()
-for ws in /home/turq/clawd-pg1 /home/turq/clawd; do
+for ws in /path/to/workspace1 /path/to/workspace2; do
   cd "$ws"
   git pull --ff-only origin main 2>&1
   CURRENT=$(git rev-parse --short HEAD)
@@ -321,8 +321,8 @@ echo "{\"workspaces\":[$(IFS=,; echo "${RESULTS[*]}")]}"
 ```json
 {
   "workspaces": [
-    {"path": "/home/turq/clawd-pg1", "commit": "3acaca5", "status": "ok"},
-    {"path": "/home/turq/clawd", "commit": "3acaca5", "status": "ok"}
+    {"path": "/path/to/workspace1", "commit": "3acaca5", "status": "ok"},
+    {"path": "/path/to/workspace2", "commit": "3acaca5", "status": "ok"}
   ]
 }
 ```
@@ -421,8 +421,8 @@ Published by daemon after each handler execution. Retained (latest result only).
   "ts": 1771143500,
   "result": {
     "workspaces": [
-      {"path": "/home/turq/clawd-pg1", "commit": "3acaca5", "status": "ok"},
-      {"path": "/home/turq/clawd", "commit": "3acaca5", "status": "ok"}
+      {"path": "/path/to/workspace1", "commit": "3acaca5", "status": "ok"},
+      {"path": "/path/to/workspace2", "commit": "3acaca5", "status": "ok"}
     ]
   }
 }
