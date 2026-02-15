@@ -1,7 +1,7 @@
 """OpenClaw agent turn injection bridge.
 
 Injects hive messages into local OpenClaw instances by running
-``openclaw [--profile X] agent --agent default --message "..."`` as a subprocess.
+``openclaw [--profile X] agent --agent main --message "..."`` as a subprocess.
 
 Previous versions used ``system event`` which only queues text passively;
 the ``agent`` command triggers a real LLM turn so the message is processed
@@ -110,7 +110,7 @@ class OcBridge:
             [
                 "agent",
                 "--agent",
-                "default",
+                "main",
                 "--session-id",
                 session_id,
                 "--thinking",
