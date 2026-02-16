@@ -182,8 +182,8 @@ def status(ctx: click.Context) -> None:
         click.echo("no nodes reporting status")
         return
 
-    click.echo(f"{'NODE':<20} {'STATUS':<12} {'LAST SEEN'}")
-    click.echo("-" * 50)
+    click.echo(f"{'NODE':<20} {'STATUS':<10} {'GW':<4} {'CRON':<5} {'ERR_1H':<6} {'LAST SEEN'}")
+    click.echo("-" * 70)
     # Stable ordering for humans.
     results.sort(key=lambda e: str(e.get("node_id") or ""))
 
@@ -191,7 +191,27 @@ def status(ctx: click.Context) -> None:
         node = entry.get("node_id", "?")
         state = entry.get("status", "?")
         last_seen = entry.get("last_seen", "?")
-        click.echo(f"{node:<20} {state:<12} {last_seen}")
+
+        oc = entry.get("oc") if isinstance(entry.get("oc"), dict) else {}
+        gw = oc.get("gw") if isinstance(oc.get("gw"), dict) else {}
+        cron = oc.get("cron") if isinstance(oc.get("cron"), dict) else {}
+        cron_status = cron.get("status") if isinstance(cron.get("status"), dict) else {}
+        errs = oc.get("errors") if isinstance(oc.get("errors"), dict) else {}
+        counts = errs.get("counts") if isinstance(errs.get("counts"), dict) else {}
+
+        gw_ok = gw.get("rpcOk")
+        gw_cell = "ok" if gw_ok is True else ("no" if gw_ok is False else "?")
+
+        cron_jobs = cron_status.get("jobs")
+        cron_cell = str(cron_jobs) if isinstance(cron_jobs, int) else "?"
+
+        err_total = 0
+        for v in counts.values():
+            if isinstance(v, int):
+                err_total += v
+        err_cell = str(err_total)
+
+        click.echo(f"{str(node):<20} {str(state):<10} {gw_cell:<4} {cron_cell:<5} {err_cell:<6} {last_seen}")
 
 
 @click.command()

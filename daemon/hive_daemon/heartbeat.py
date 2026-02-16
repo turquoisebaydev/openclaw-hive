@@ -19,6 +19,7 @@ import aiomqtt
 
 from hive_daemon.config import HiveConfig, OcInstance
 from hive_daemon.envelope import Envelope, create_envelope
+from hive_daemon.probe import probe_instance
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +69,12 @@ class HeartbeatManager:
         self._start_time = time.monotonic()
         self._publish_task: asyncio.Task | None = None
         self._check_task: asyncio.Task | None = None
+        self._probe_task: asyncio.Task | None = None
+
+        # Latest deterministic probe results per managed OC instance name.
+        # Published via retained meta/<name>/state.
+        self._probe: dict[str, dict] = {}
+        self._probe_interval = 30.0
 
     @property
     def known_peers(self) -> dict[str, PeerState]:
@@ -160,6 +167,11 @@ class HeartbeatManager:
                 "known_peers": known_peers,
                 "daemon_node": self._config.node_id,
             }
+
+            probe = self._probe.get(name)
+            if isinstance(probe, dict) and probe:
+                # Deterministic gateway probe snapshot (no LLM calls).
+                state["oc"] = probe
             topic = f"{self._config.topic_prefix}/meta/{name}/state"
             await self._client.publish(topic, json.dumps(state), retain=True)
             log.debug("published instance state to %s", topic)
@@ -232,10 +244,31 @@ class HeartbeatManager:
             except Exception:
                 log.exception("error checking peers")
 
+    async def _probe_loop(self) -> None:
+        """Background loop: probe local OC instances (deterministic).
+
+        Runs less frequently than heartbeats; results are cached and included
+        in retained `meta/<instance>/state` messages.
+        """
+        while True:
+            try:
+                for inst in self._config.oc_instances:
+                    res = await probe_instance(inst)
+                    # Keep a stable, compact schema for CLI display.
+                    self._probe[inst.name] = {
+                        "ts": res.ts,
+                        **(res.data or {}),
+                    }
+            except Exception:
+                log.exception("gateway probe failed")
+            await asyncio.sleep(self._probe_interval)
+
     def start(self) -> None:
         """Start the heartbeat publish and peer-check background tasks."""
         self._publish_task = asyncio.create_task(self._publish_loop())
         self._check_task = asyncio.create_task(self._check_loop())
+        if self._config.oc_instances:
+            self._probe_task = asyncio.create_task(self._probe_loop())
         log.info(
             "heartbeat manager started (interval=%.1fs, miss_threshold=%d)",
             self._interval,
@@ -244,7 +277,7 @@ class HeartbeatManager:
 
     async def stop(self) -> None:
         """Stop the background tasks."""
-        for task in (self._publish_task, self._check_task):
+        for task in (self._publish_task, self._check_task, self._probe_task):
             if task is not None:
                 task.cancel()
                 try:
@@ -253,4 +286,5 @@ class HeartbeatManager:
                     pass
         self._publish_task = None
         self._check_task = None
+        self._probe_task = None
         log.info("heartbeat manager stopped")
