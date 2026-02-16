@@ -171,8 +171,9 @@ def reply(ctx: click.Context, to_msg: str, text: str) -> None:
 
 
 @click.command()
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
 @click.pass_context
-def status(ctx: click.Context) -> None:
+def status(ctx: click.Context, as_json: bool) -> None:
     """Display cluster status from retained meta/state messages."""
     cfg = _get_config(ctx)
     topic_filter = f"{cfg.topic_prefix}/meta/+/state"
@@ -182,10 +183,15 @@ def status(ctx: click.Context) -> None:
         click.echo("no nodes reporting status")
         return
 
-    click.echo(f"{'NODE':<20} {'STATUS':<10} {'GW':<4} {'CRON':<5} {'ERR_1H':<6} {'LAST SEEN'}")
-    click.echo("-" * 70)
     # Stable ordering for humans.
     results.sort(key=lambda e: str(e.get("node_id") or ""))
+
+    if as_json:
+        click.echo(json.dumps(results, indent=2))
+        return
+
+    click.echo(f"{'NODE':<20} {'STATUS':<10} {'GW':<4} {'CRON':<5} {'ERR_1H':<6} {'LAST SEEN'}")
+    click.echo("-" * 70)
 
     for entry in results:
         node = entry.get("node_id", "?")
