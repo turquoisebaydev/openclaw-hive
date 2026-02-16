@@ -16,6 +16,8 @@ import logging
 import os
 from datetime import datetime, timezone
 
+from collections.abc import Awaitable, Callable
+
 from hive_daemon.config import OcInstance
 from hive_daemon.envelope import Envelope
 
@@ -28,7 +30,7 @@ DEFAULT_TIMEOUT = 300
 # Keep it short: it is paid every injection.
 _HIVE_SKILL_HINT = "Use the hive-member skill for protocol details (esp. hive-cli reply/send)."
 # Keep this short: it's paid on every injection.
-_HIVE_REPLY_HINT = "Then reply with the output only, via hive-cli reply using the ENVELOPE_JSON at the end."
+_HIVE_REPLY_HINT = "Then reply with the output only (the hive daemon will forward it)."
 
 # Env vars injected into openclaw subprocess for self-signed cert compat.
 _SUBPROCESS_ENV: dict[str, str] | None = None
@@ -63,12 +65,21 @@ class OcBridge:
         self,
         oc_instances: list[OcInstance],
         timeout: int = DEFAULT_TIMEOUT,
+        publish_reply: Callable[[Envelope, str, str], Awaitable[None]] | None = None,
     ) -> None:
         self._instances = oc_instances
         self._timeout = timeout
+        self._publish_reply = publish_reply
         # Cache resolved agent ids per instance name (only used when agent_id is
         # not explicitly configured). Prevents repeated "Unknown agent id" fails.
         self._resolved_agent_id: dict[str, str] = {}
+
+    def set_reply_publisher(
+        self,
+        publish_reply: Callable[[Envelope, str, str], Awaitable[None]] | None,
+    ) -> None:
+        """Set/replace the async publisher for correlated replies."""
+        self._publish_reply = publish_reply
 
     @staticmethod
     def format_event_text(envelope: Envelope, prefix: str = "") -> str:
@@ -139,6 +150,7 @@ class OcBridge:
         self,
         text: str,
         instance_name: str | None = None,
+        envelope: Envelope | None = None,
     ) -> None:
         """Inject an agent message into OC instance(s).
 
@@ -166,11 +178,11 @@ class OcBridge:
             # Fire-and-forget: launch as background task so we don't
             # block the daemon while the LLM processes.
             asyncio.create_task(
-                self._inject_to_instance(instance, text),
+                self._inject_to_instance(instance, text, envelope=envelope),
                 name=f"oc-inject-{instance.name}",
             )
 
-    async def _inject_to_instance(self, instance: OcInstance, text: str) -> None:
+    async def _inject_to_instance(self, instance: OcInstance, text: str, *, envelope: Envelope | None = None) -> None:
         """Run the openclaw CLI command for a single instance."""
         session_id = self._session_id_for_instance(instance)
 
@@ -270,9 +282,10 @@ class OcBridge:
                     skill_names = [e.get("name") for e in skills_entries if isinstance(e, dict)]
 
                     payloads = result.get("payloads") or []
-                    reply_preview = ""
+                    reply_text = ""
                     if payloads and isinstance(payloads[0], dict):
-                        reply_preview = (payloads[0].get("text") or "")[:200]
+                        reply_text = (payloads[0].get("text") or "")
+                    reply_preview = reply_text[:200]
 
                     log.info(
                         "OC inject ok instance=%r session=%s agent=%s reportedSession=%s skills=%s reply=%r",
@@ -283,6 +296,11 @@ class OcBridge:
                         ",".join([s for s in skill_names if s]) or "(none)",
                         reply_preview,
                     )
+
+                    # Publish a correlated hive response (so hive-cli --wait works)
+                    # with responder identity = the addressed OC instance name.
+                    if envelope is not None and self._publish_reply is not None and reply_text:
+                        await self._publish_reply(envelope, instance.name, reply_text)
                 except Exception as exc:
                     log.info(
                         "OC inject ok instance=%r session=%s agent=%s (stdout not parsed as JSON: %s). stdout=%r",
@@ -328,4 +346,4 @@ class OcBridge:
         metadata before injecting.
         """
         text = self.format_event_text(envelope, prefix=prefix)
-        await self.inject_event(text, instance_name=instance_name)
+        await self.inject_event(text, instance_name=instance_name, envelope=envelope)
