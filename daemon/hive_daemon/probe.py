@@ -280,44 +280,42 @@ async def probe_instance(inst: OcInstance, *, cron_timeout_s: float = 5.0) -> Pr
     state_dir = _state_dir_for_profile(profile)
 
     # --- gateway RPC probe via cron status ---
-    token = _read_gateway_token(profile)
+    # Use cron status/list as a deterministic RPC probe (no agent turns).
+    # IMPORTANT: do not pass tokens on argv; rely on profile config.
     gw: dict[str, Any] = {
         "rpcOk": False,
         "port": inst.port,
+        "profile": profile,
         "error": None,
     }
 
     cron_status: dict[str, Any] = {}
     cron_list_summary: dict[str, Any] = {}
 
-    if token and inst.port:
-        url = f"wss://127.0.0.1:{inst.port}"
-        ok1, st, err1 = await _run_openclaw_json(
+    ok1, st, err1 = await _run_openclaw_json(
+        profile=profile,
+        args=["cron", "status", "--json", "--timeout", "5000"],
+        timeout_s=cron_timeout_s,
+    )
+    if ok1 and isinstance(st, dict):
+        gw["rpcOk"] = True
+        cron_status = {
+            "enabled": st.get("enabled"),
+            "jobs": st.get("jobs"),
+            "nextWakeAtMs": st.get("nextWakeAtMs"),
+        }
+
+        ok2, lst, err2 = await _run_openclaw_json(
             profile=profile,
-            args=["cron", "status", "--json", "--timeout", "5000", "--url", url, "--token", token],
+            args=["cron", "list", "--json", "--timeout", "5000"],
             timeout_s=cron_timeout_s,
         )
-        if ok1 and isinstance(st, dict):
-            gw["rpcOk"] = True
-            cron_status = {
-                "enabled": st.get("enabled"),
-                "jobs": st.get("jobs"),
-                "nextWakeAtMs": st.get("nextWakeAtMs"),
-            }
-
-            ok2, lst, err2 = await _run_openclaw_json(
-                profile=profile,
-                args=["cron", "list", "--json", "--timeout", "5000", "--url", url, "--token", token],
-                timeout_s=cron_timeout_s,
-            )
-            if ok2:
-                cron_list_summary = _summarize_cron_list(lst)
-            else:
-                cron_list_summary = {"error": err2}
+        if ok2:
+            cron_list_summary = _summarize_cron_list(lst)
         else:
-            gw["error"] = err1 or "cron status failed"
+            cron_list_summary = {"error": err2}
     else:
-        gw["error"] = "missing gateway token or port"
+        gw["error"] = err1 or "cron status failed"
 
     # --- deterministic local session + error summaries ---
     sessions_summary = _summarize_sessions(state_dir)
