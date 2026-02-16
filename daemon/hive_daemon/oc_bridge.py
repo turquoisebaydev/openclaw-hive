@@ -27,6 +27,8 @@ DEFAULT_TIMEOUT = 300
 # Hard hint included in injected text so OC reliably loads the hive-member skill.
 # Keep it short: it is paid every injection.
 _HIVE_SKILL_HINT = "Use the hive-member skill for protocol details (esp. hive-cli reply/send)."
+# Keep this short: it's paid on every injection.
+_HIVE_REPLY_HINT = "Then reply with the output only, via hive-cli reply using the ENVELOPE_JSON at the end."
 
 # Env vars injected into openclaw subprocess for self-signed cert compat.
 _SUBPROCESS_ENV: dict[str, str] | None = None
@@ -84,6 +86,7 @@ class OcBridge:
         if prefix:
             parts.append(prefix)
         parts.append(_HIVE_SKILL_HINT)
+        parts.append(_HIVE_REPLY_HINT)
         parts.append(envelope.text)
 
         readable = " ".join(parts)
