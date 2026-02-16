@@ -26,11 +26,9 @@ log = logging.getLogger(__name__)
 # Agent turns involve LLM processing — allow generous timeout.
 DEFAULT_TIMEOUT = 300
 
-# Hard hint included in injected text so OC reliably loads the hive-member skill.
+# Hint included in injected text for predictable, machine-readable replies.
 # Keep it short: it is paid every injection.
-_HIVE_SKILL_HINT = "Use the hive-member skill for protocol details (esp. hive-cli reply/send)."
-# Keep this short: it's paid on every injection.
-_HIVE_REPLY_HINT = "Then reply with the output only (the hive daemon will forward it)."
+_HIVE_REPLY_HINT = "Reply with plain text only (do not call hive-cli; the hive daemon will forward it)."
 
 # Env vars injected into openclaw subprocess for self-signed cert compat.
 _SUBPROCESS_ENV: dict[str, str] | None = None
@@ -96,13 +94,11 @@ class OcBridge:
         parts: list[str] = [meta]
         if prefix:
             parts.append(prefix)
-        parts.append(_HIVE_SKILL_HINT)
         parts.append(_HIVE_REPLY_HINT)
         parts.append(envelope.text)
 
-        readable = " ".join(parts)
-        envelope_json = json.dumps(envelope.to_json(), separators=(",", ":"))
-        return f"{readable}\nENVELOPE_JSON:{envelope_json}"
+        # Keep formatting simple + stable.
+        return "\n".join([parts[0], " ".join(parts[1:])])
 
     @staticmethod
     def _session_id_for_instance(instance: OcInstance) -> str:
