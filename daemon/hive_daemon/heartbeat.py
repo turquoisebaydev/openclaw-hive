@@ -155,6 +155,7 @@ class HeartbeatManager:
             state = {
                 "node_id": name,
                 "status": "online",
+                "last_seen": int(time.time()),
                 "uptime_s": uptime_s,
                 "known_peers": known_peers,
                 "daemon_node": self._config.node_id,

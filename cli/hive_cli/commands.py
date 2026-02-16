@@ -78,9 +78,11 @@ async def _publish_and_wait(
 async def _read_retained(cfg: HiveConfig, topic_filter: str, timeout: float = 2.0) -> list[dict]:
     """Subscribe to a topic, collect retained messages, then return.
 
-    Uses a short timeout to wait for retained messages to arrive.
+    We want the *latest retained value per topic*. When a publisher updates
+    retained state frequently, we may see multiple messages per topic during
+    the short collection window. We dedupe by topic and keep the most recent.
     """
-    results: list[dict] = []
+    latest_by_topic: dict[str, dict] = {}
     async with _mqtt_client(cfg) as client:
         await client.subscribe(topic_filter)
         try:
@@ -88,12 +90,12 @@ async def _read_retained(cfg: HiveConfig, topic_filter: str, timeout: float = 2.
                 async for message in client.messages:
                     try:
                         data = json.loads(message.payload.decode())
-                        results.append(data)
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         continue
+                    latest_by_topic[str(message.topic)] = data
         except TimeoutError:
             pass
-    return results
+    return list(latest_by_topic.values())
 
 
 @click.command()
@@ -182,6 +184,9 @@ def status(ctx: click.Context) -> None:
 
     click.echo(f"{'NODE':<20} {'STATUS':<12} {'LAST SEEN'}")
     click.echo("-" * 50)
+    # Stable ordering for humans.
+    results.sort(key=lambda e: str(e.get("node_id") or ""))
+
     for entry in results:
         node = entry.get("node_id", "?")
         state = entry.get("status", "?")
