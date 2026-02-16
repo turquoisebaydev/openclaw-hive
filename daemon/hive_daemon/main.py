@@ -364,7 +364,7 @@ async def run_daemon(config: HiveConfig) -> None:
     dispatcher = Dispatcher(config.handler_dir, timeout=config.handler_timeout)
     dispatcher.discover()
 
-    # Set up OC bridge
+    # Set up OC bridge (reply publisher wired after MQTT connect)
     oc_bridge = OcBridge(config.oc_instances) if config.oc_instances else None
 
     # Correlation store for enriching responses with original command context
@@ -394,6 +394,20 @@ async def run_daemon(config: HiveConfig) -> None:
                     interval=config.heartbeat.interval,
                     miss_threshold=config.heartbeat.miss_threshold,
                 )
+
+                # Wire OC reply publisher so multi-instance replies identify
+                # the addressed OC instance (e.g. mini1) rather than the daemon node_id.
+                if oc_bridge is not None:
+                    from hive_daemon.envelope import create_reply
+
+                    async def _publish_agent_reply(original, responder: str, text: str) -> None:
+                        reply = create_reply(original, from_=responder, text=text)
+                        topic = f"{config.topic_prefix}/{original.from_}/response"
+                        payload = json.dumps(reply.to_json())
+                        await client.publish(topic, payload)
+                        log.info("published agent response %s -> %s", reply.id, topic)
+
+                    oc_bridge.set_reply_publisher(_publish_agent_reply)
 
                 router = setup_router(
                     config,
