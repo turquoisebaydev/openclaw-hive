@@ -48,7 +48,8 @@ daemon/
     dispatcher.py      ← handler script dispatch
     heartbeat.py       ← machine-to-machine heartbeat
     envelope.py        ← message envelope model
-    oc_bridge.py       ← inject system events into local OC
+    oc_bridge.py       ← inject agent messages into local OC
+    session_map.py     ← corr→session file-based store (CLI↔daemon IPC)
   tests/
     conftest.py
     test_router.py
@@ -105,8 +106,16 @@ turq/hive/meta/{node}/...    ← retained state (status, roster, action results)
 - stderr: error detail for escalation
 
 ### OC Bridge
-- Inbound to OC: `openclaw system event --text "..."` (CLI command)
+- Inbound to OC: `openclaw agent --agent main --session-id <id> --message "..."` (CLI command, triggers real LLM turn)
 - The daemon decides what goes to OC (commands, alerts, failed syncs) vs what stays local (heartbeats, successful syncs)
+- Response routing: when a response arrives with a correlated session mapping (via `session_map.py`), the bridge injects into the originating session instead of the default daily hive session
+
+### Session Map (Response Routing)
+- File-based corr→session store at `~/.local/share/hive/session-map.json`
+- CLI writes mappings (`hive-cli send --session <key>`), daemon reads on response delivery
+- Mappings have TTL (defaults to `--ttl` value or 1 hour), auto-pruned on read/write
+- **Never sent over MQTT** — purely local IPC between CLI and daemon on same host
+- Falls back to default hive session if mapping expired, missing, or session gone
 
 ## Build & Run
 
@@ -124,6 +133,7 @@ cd daemon && python -m hive_daemon.main --config hive.toml
 
 # CLI usage
 hive-cli send --to pg1-18890 --ch command --text "do something"
+hive-cli send --to pg1 --ch command --text "check disk" --session "my-session-key"
 hive-cli status
 hive-cli roster
 ```
