@@ -271,7 +271,7 @@ class TestReplyCommand:
     @patch("hive_cli.commands._mqtt_client")
     @patch("hive_daemon.session_map.put")
     def test_reply_with_session_flag(self, mock_session_put, mock_client_fn, runner, config_file):
-        """When --session is provided, reply stores a session mapping using the reply envelope's id."""
+        """When --session is provided, reply stores mapping keyed by corr (for response routing)."""
         client = _make_mock_client()
         mock_client_fn.return_value = client
 
@@ -290,15 +290,16 @@ class TestReplyCommand:
         assert "session map:" in result.output
         assert "my-session-key" in result.output
 
-        # Verify session_map.put was called with the reply envelope's id (not the original's id)
+        # Verify session_map.put was called with the corr field (what future responses will carry)
         mock_session_put.assert_called_once()
         call_args = mock_session_put.call_args
         corr_id = call_args.args[0]
         session = call_args.args[1]
         ttl = call_args.kwargs.get("ttl")
 
-        # The corr_id should be the reply envelope's id (auto-generated, not "orig-uuid-1234")
-        assert corr_id != "orig-uuid-1234"
+        # The mapping key should be the corr field from the reply envelope
+        # (which equals original.id since original has no corr)
+        assert corr_id == "orig-uuid-1234"
         assert session == "my-session-key"
         assert ttl == 7200  # inherited from original envelope's ttl
 

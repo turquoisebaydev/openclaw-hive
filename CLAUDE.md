@@ -114,6 +114,7 @@ turq/hive/meta/{node}/...    ← retained state (status, roster, action results)
 - File-based corr→session store at `~/.local/share/hive/session-map.json`
 - CLI writes mappings (`hive-cli send --session <key>` and `hive-cli reply --session <key>`), daemon reads on response delivery
 - Both `send` and `reply` support `--session` — enables bi-directional session-pinned conversations where both sides route responses to specific sessions
+- **Important for reply chains:** when using `hive-cli reply --session`, store the mapping using the correlation id (`corr`) that the next response will carry (and preserve compatibility for existing id-based behavior)
 - Mappings have TTL (defaults to `--ttl` value or 1 hour), auto-pruned on read/write
 - **Never sent over MQTT** — purely local IPC between CLI and daemon on same host
 - Falls back to default hive session if mapping expired, missing, or session gone

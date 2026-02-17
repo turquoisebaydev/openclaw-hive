@@ -181,8 +181,9 @@ def reply(ctx: click.Context, to_msg: str, text: str, session: str | None) -> No
         from hive_daemon.session_map import put as session_map_put
         # Use original envelope's ttl if available, else 3600
         map_ttl = original.ttl if original.ttl is not None else 3600
-        session_map_put(env.id, session, ttl=map_ttl)
-        click.echo(f"session map: {env.id} -> {session} (ttl={map_ttl}s)")
+        # Key by corr (what future responses will carry), not reply envelope id
+        session_map_put(env.corr, session, ttl=map_ttl)
+        click.echo(f"session map: {env.corr} -> {session} (ttl={map_ttl}s)")
 
     asyncio.run(_publish(cfg, topic, payload))
     click.echo(f"reply {env.id} -> {topic} (corr={env.corr})")
