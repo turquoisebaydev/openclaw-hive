@@ -114,13 +114,13 @@ class OcBridge:
         day = datetime.now(timezone.utc).strftime("%Y%m%d")
         return f"hive-{instance.name}-{day}"
 
-    def _build_command(self, instance: OcInstance, text: str, agent_id: str) -> list[str]:
+    def _build_command(self, instance: OcInstance, text: str, agent_id: str, *, session_override: str | None = None) -> list[str]:
         """Build the openclaw CLI command for a given instance."""
         cmd = ["openclaw"]
         if instance.profile:
             cmd.extend(["--profile", instance.profile])
 
-        session_id = self._session_id_for_instance(instance)
+        session_id = session_override or self._session_id_for_instance(instance)
 
         # Use --json so we can parse & log session/skills diagnostics.
         # Thinking level note:
@@ -147,6 +147,7 @@ class OcBridge:
         text: str,
         instance_name: str | None = None,
         envelope: Envelope | None = None,
+        session_override: str | None = None,
     ) -> None:
         """Inject an agent message into OC instance(s).
 
@@ -174,11 +175,11 @@ class OcBridge:
             # Fire-and-forget: launch as background task so we don't
             # block the daemon while the LLM processes.
             asyncio.create_task(
-                self._inject_to_instance(instance, text, envelope=envelope),
+                self._inject_to_instance(instance, text, envelope=envelope, session_override=session_override),
                 name=f"oc-inject-{instance.name}",
             )
 
-    async def _inject_to_instance(self, instance: OcInstance, text: str, *, envelope: Envelope | None = None) -> None:
+    async def _inject_to_instance(self, instance: OcInstance, text: str, *, envelope: Envelope | None = None, session_override: str | None = None) -> None:
         """Run the openclaw CLI command for a single instance."""
         session_id = self._session_id_for_instance(instance)
 
@@ -190,7 +191,7 @@ class OcBridge:
         agent_id = instance.agent_id or self._resolved_agent_id.get(instance.name) or "main"
 
         async def run_with(agent: str) -> tuple[int, str, str] | None:
-            cmd = self._build_command(instance, text, agent)
+            cmd = self._build_command(instance, text, agent, session_override=session_override)
 
             log.info(
                 "injecting agent message to OC instance %r (session=%s agent=%s): %s",
@@ -339,7 +340,19 @@ class OcBridge:
         """Format an envelope and inject it as an agent message.
 
         Convenience method that formats the envelope text with hive
-        metadata before injecting.
+        metadata before injecting. For response envelopes with a
+        correlated session mapping, routes to the originating session.
         """
+        # Check session map for response routing
+        session_override: str | None = None
+        if envelope.ch == "response" and envelope.corr:
+            from hive_daemon.session_map import pop as session_map_pop
+            session_override = session_map_pop(envelope.corr)
+            if session_override:
+                log.info(
+                    "session_map: routing response %s to session %s (corr=%s)",
+                    envelope.id, session_override, envelope.corr,
+                )
+
         text = self.format_event_text(envelope, prefix=prefix)
-        await self.inject_event(text, instance_name=instance_name, envelope=envelope)
+        await self.inject_event(text, instance_name=instance_name, envelope=envelope, session_override=session_override)
