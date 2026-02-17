@@ -268,6 +268,62 @@ class TestReplyCommand:
         topic = client.publish.call_args.args[0]
         assert topic == "turq/hive/sender-node/response"
 
+    @patch("hive_cli.commands._mqtt_client")
+    @patch("hive_cli.commands.session_map_put")
+    def test_reply_with_session_flag(self, mock_session_put, mock_client_fn, runner, config_file):
+        """When --session is provided, reply stores a session mapping using the reply envelope's id."""
+        client = _make_mock_client()
+        mock_client_fn.return_value = client
+
+        original = _sample_envelope_json()
+        original["ttl"] = 7200  # 2 hours
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "reply",
+            "--to-msg", json.dumps(original),
+            "--text", "acknowledged",
+            "--session", "my-session-key",
+        ])
+
+        assert result.exit_code == 0, result.output
+        assert "session map:" in result.output
+        assert "my-session-key" in result.output
+
+        # Verify session_map.put was called with the reply envelope's id (not the original's id)
+        mock_session_put.assert_called_once()
+        call_args = mock_session_put.call_args
+        corr_id = call_args.args[0]
+        session = call_args.args[1]
+        ttl = call_args.kwargs.get("ttl")
+
+        # The corr_id should be the reply envelope's id (auto-generated, not "orig-uuid-1234")
+        assert corr_id != "orig-uuid-1234"
+        assert session == "my-session-key"
+        assert ttl == 7200  # inherited from original envelope's ttl
+
+    @patch("hive_cli.commands._mqtt_client")
+    @patch("hive_cli.commands.session_map_put")
+    def test_reply_with_session_no_ttl_in_original(self, mock_session_put, mock_client_fn, runner, config_file):
+        """When --session is provided but original has no ttl, default to 3600."""
+        client = _make_mock_client()
+        mock_client_fn.return_value = client
+
+        original = _sample_envelope_json()  # no ttl field
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "reply",
+            "--to-msg", json.dumps(original),
+            "--text", "done",
+            "--session", "test-session",
+        ])
+
+        assert result.exit_code == 0, result.output
+        mock_session_put.assert_called_once()
+        ttl = mock_session_put.call_args.kwargs.get("ttl")
+        assert ttl == 3600  # default ttl
+
 
 # ── status command ──────────────────────────────────────────────────
 

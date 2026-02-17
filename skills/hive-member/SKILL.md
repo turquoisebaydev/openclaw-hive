@@ -65,10 +65,13 @@ When you receive a hive command via system event, reply with:
 ```bash
 hive-cli reply \
   --to-msg '<original-envelope-json>' \
-  --text "your response"
+  --text "your response" \
+  [--session <session-key>]
 ```
 
 The reply automatically sets `ch: response`, copies the correlation ID, and sets `replyTo`. **Only reply when the sender needs information back.** If you were told to "do X", just do it — don't reply unless results were requested.
+
+The optional `--session` flag stores a local mapping so that when the remote node responds to *your* reply, their response gets routed back to the specified session instead of the default hive session. This enables bi-directional session-pinned conversations. The mapping inherits the original envelope's TTL (or defaults to 1 hour). **Session mappings are never sent over MQTT** — they're purely local IPC between CLI and daemon.
 
 ### Check cluster status
 ```bash

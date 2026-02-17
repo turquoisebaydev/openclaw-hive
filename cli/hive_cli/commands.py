@@ -153,8 +153,9 @@ def send(ctx: click.Context, to_node: str, channel: str, text: str, action: str 
 @click.command()
 @click.option("--to-msg", "to_msg", required=True, help="Original envelope as JSON string or path to JSON file.")
 @click.option("--text", required=True, help="Reply text.")
+@click.option("--session", default=None, help="Session key to route the response back to (stored locally, not sent over MQTT).")
 @click.pass_context
-def reply(ctx: click.Context, to_msg: str, text: str) -> None:
+def reply(ctx: click.Context, to_msg: str, text: str, session: str | None) -> None:
     """Publish a reply to a previous message."""
     cfg = _get_config(ctx)
 
@@ -174,6 +175,15 @@ def reply(ctx: click.Context, to_msg: str, text: str) -> None:
     env = create_reply(original, from_=cfg.node_id, text=text)
     topic = f"{cfg.topic_prefix}/{env.to}/{env.ch}"
     payload = json.dumps(env.to_json())
+
+    # Store session mapping locally (never goes on MQTT)
+    if session is not None:
+        from hive_daemon.session_map import put as session_map_put
+        # Use original envelope's ttl if available, else 3600
+        map_ttl = original.ttl if original.ttl is not None else 3600
+        session_map_put(env.id, session, ttl=map_ttl)
+        click.echo(f"session map: {env.id} -> {session} (ttl={map_ttl}s)")
+
     asyncio.run(_publish(cfg, topic, payload))
     click.echo(f"reply {env.id} -> {topic} (corr={env.corr})")
 
