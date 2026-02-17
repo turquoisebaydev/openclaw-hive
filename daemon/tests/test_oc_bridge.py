@@ -33,14 +33,16 @@ class TestFormatEventText:
     def test_basic_format(self):
         env = _make_envelope(from_="node-a", to="node-b", ch="command", text="hello world")
         text = OcBridge.format_event_text(env)
-        assert text.startswith("[hive:node-a->node-b ch:command] hello world")
-        assert "\nENVELOPE_JSON:" in text
+        assert text.startswith("[hive:node-a->node-b ch:command]\n")
+        assert "Reply with plain text only" in text
+        assert "hello world" in text
 
     def test_with_prefix(self):
         env = _make_envelope(text="urgent stuff")
         text = OcBridge.format_event_text(env, prefix="URGENT")
-        assert text.startswith("[hive:node-a->node-b ch:command] URGENT urgent stuff")
-        assert "\nENVELOPE_JSON:" in text
+        assert text.startswith("[hive:node-a->node-b ch:command]\n")
+        assert "URGENT" in text
+        assert "urgent stuff" in text
 
     def test_alert_channel(self):
         env = _make_envelope(ch="alert", text="disk full")
@@ -53,14 +55,26 @@ class TestBuildCommand:
     def test_command_without_profile(self):
         bridge = OcBridge([])
         inst = OcInstance(name="main")
-        cmd = bridge._build_command(inst, "hello")
-        assert cmd == ["openclaw", "agent", "--agent", "default", "--message", "hello"]
+        cmd = bridge._build_command(inst, "hello", "main")
+        # Should include agent, session-id (daily format), thinking, json, and message
+        assert cmd[0] == "openclaw"
+        assert "--agent" in cmd
+        assert "--session-id" in cmd
+        assert "--thinking" in cmd
+        assert "--json" in cmd
+        assert "--message" in cmd
+        assert "hello" in cmd
 
     def test_command_with_profile(self):
         bridge = OcBridge([])
         inst = OcInstance(name="main", profile="pg1")
-        cmd = bridge._build_command(inst, "hello")
-        assert cmd == ["openclaw", "--profile", "pg1", "agent", "--agent", "default", "--message", "hello"]
+        cmd = bridge._build_command(inst, "hello", "main")
+        # Should have profile before agent command
+        assert cmd[:2] == ["openclaw", "--profile"]
+        assert "pg1" in cmd
+        assert "--agent" in cmd
+        assert "--message" in cmd
+        assert "hello" in cmd
 
 
 class TestInjectEvent:

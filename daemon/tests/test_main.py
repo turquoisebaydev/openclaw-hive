@@ -157,7 +157,8 @@ class TestHandleMessage:
         msg = _mqtt_msg("turq/hive/turq-18789/command", bad_payload)
         await _handle_message(msg, cfg, router)
 
-    async def test_own_messages_ignored(self):
+    async def test_own_command_to_self_allowed(self):
+        """Self-originated commands to local node are processed (for multi-instance setups)."""
         cfg = _config()
         router = Router()
         received = []
@@ -170,10 +171,10 @@ class TestHandleMessage:
         own_payload = {**VALID_PAYLOAD, "from": "turq-18789"}
         msg = _mqtt_msg("turq/hive/turq-18789/command", own_payload)
         await _handle_message(msg, cfg, router)
-        assert len(received) == 0
+        assert len(received) == 1
 
-    async def test_own_instance_messages_ignored(self):
-        """Messages from any managed instance name are treated as self."""
+    async def test_own_instance_command_to_local_allowed(self):
+        """Commands from managed instances to local nodes are processed."""
         cfg = _config(
             node_id="turq",
             oc_instances=[
@@ -189,9 +190,25 @@ class TestHandleMessage:
 
         router.register("command", handler)
 
-        # Message from mini1 (managed instance) to turq — should be ignored
+        # Message from mini1 (managed instance) to turq — should be processed
         payload = {**VALID_PAYLOAD, "from": "mini1", "to": "turq"}
         msg = _mqtt_msg("turq/hive/turq/command", payload)
+        await _handle_message(msg, cfg, router)
+        assert len(received) == 1
+
+    async def test_own_non_command_messages_ignored(self):
+        """Self-originated non-command messages (heartbeat, response) are ignored to prevent loops."""
+        cfg = _config()
+        router = Router()
+        received = []
+
+        async def handler(env: Envelope, target: str) -> None:
+            received.append(env)
+
+        router.register("heartbeat", handler)
+
+        own_payload = {**VALID_PAYLOAD, "from": "turq-18789", "ch": "heartbeat"}
+        msg = _mqtt_msg("turq/hive/turq-18789/heartbeat", own_payload)
         await _handle_message(msg, cfg, router)
         assert len(received) == 0
 
