@@ -269,7 +269,7 @@ class TestReplyCommand:
         assert topic == "turq/hive/sender-node/response"
 
     @patch("hive_cli.commands._mqtt_client")
-    @patch("hive_cli.commands.session_map_put")
+    @patch("hive_daemon.session_map.put")
     def test_reply_with_session_flag(self, mock_session_put, mock_client_fn, runner, config_file):
         """When --session is provided, reply stores a session mapping using the reply envelope's id."""
         client = _make_mock_client()
@@ -303,7 +303,7 @@ class TestReplyCommand:
         assert ttl == 7200  # inherited from original envelope's ttl
 
     @patch("hive_cli.commands._mqtt_client")
-    @patch("hive_cli.commands.session_map_put")
+    @patch("hive_daemon.session_map.put")
     def test_reply_with_session_no_ttl_in_original(self, mock_session_put, mock_client_fn, runner, config_file):
         """When --session is provided but original has no ttl, default to 3600."""
         client = _make_mock_client()
