@@ -106,8 +106,9 @@ async def _read_retained(cfg: HiveConfig, topic_filter: str, timeout: float = 2.
 @click.option("--urgency", default="now", type=click.Choice(sorted(VALID_URGENCIES)), help="Message urgency.")
 @click.option("--ttl", default=None, type=int, help="Time-to-live in seconds.")
 @click.option("--wait", "wait_timeout", default=None, type=float, help="Block up to N seconds for a correlated response.")
+@click.option("--session", default=None, help="Session key to route the response back to (stored locally, not sent over MQTT).")
 @click.pass_context
-def send(ctx: click.Context, to_node: str, channel: str, text: str, action: str | None, urgency: str, ttl: int | None, wait_timeout: float | None) -> None:
+def send(ctx: click.Context, to_node: str, channel: str, text: str, action: str | None, urgency: str, ttl: int | None, wait_timeout: float | None, session: str | None) -> None:
     """Publish an envelope to MQTT.
 
     With --wait, blocks until a correlated response arrives (or timeout).
@@ -126,6 +127,13 @@ def send(ctx: click.Context, to_node: str, channel: str, text: str, action: str 
     )
     topic = f"{cfg.topic_prefix}/{to_node}/{channel}"
     payload = json.dumps(env.to_json())
+
+    # Store session mapping locally (never goes on MQTT)
+    if session is not None:
+        from hive_daemon.session_map import put as session_map_put
+        map_ttl = ttl if ttl is not None else 3600
+        session_map_put(env.id, session, ttl=map_ttl)
+        click.echo(f"session map: {env.id} -> {session} (ttl={map_ttl}s)")
 
     if wait_timeout is not None:
         # Synchronous send-and-wait: block for correlated response
