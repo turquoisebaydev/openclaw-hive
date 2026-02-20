@@ -375,6 +375,122 @@ class TestStatusCommand:
         topic = args.args[1] if len(args.args) > 1 else args.kwargs.get("topic_filter")
         assert topic == "turq/hive/meta/+/state"
 
+    @patch("hive_cli.commands._read_retained")
+    @patch("hive_cli.commands.time")
+    def test_status_detects_stale_nodes(self, mock_time, mock_read, runner, config_file):
+        """Nodes with last_seen > 30s ago should be marked as 'stale'."""
+        current_time = 1700000100.0
+        mock_time.time.return_value = current_time
+
+        mock_read.return_value = [
+            {"node_id": "fresh-node", "status": "online", "last_seen": int(current_time - 10)},
+            {"node_id": "stale-node", "status": "online", "last_seen": int(current_time - 60)},
+        ]
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "status",
+        ])
+
+        assert result.exit_code == 0, result.output
+        # Fresh node should keep its status
+        assert "fresh-node" in result.output
+        # Stale node should be marked as stale regardless of reported status
+        assert "stale-node" in result.output
+        assert "stale" in result.output
+
+    @patch("hive_cli.commands._read_retained")
+    @patch("hive_cli.commands.time")
+    def test_status_human_readable_age_seconds(self, mock_time, mock_read, runner, config_file):
+        """Recent timestamps should show as 'Xs ago'."""
+        current_time = 1700000100.0
+        mock_time.time.return_value = current_time
+
+        mock_read.return_value = [
+            {"node_id": "recent-node", "status": "online", "last_seen": int(current_time - 15)},
+        ]
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "status",
+        ])
+
+        assert result.exit_code == 0, result.output
+        assert "15s ago" in result.output
+
+    @patch("hive_cli.commands._read_retained")
+    @patch("hive_cli.commands.time")
+    def test_status_human_readable_age_minutes(self, mock_time, mock_read, runner, config_file):
+        """Timestamps < 1h ago should show as 'Xm ago'."""
+        current_time = 1700000100.0
+        mock_time.time.return_value = current_time
+
+        mock_read.return_value = [
+            {"node_id": "old-node", "status": "online", "last_seen": int(current_time - 300)},
+        ]
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "status",
+        ])
+
+        assert result.exit_code == 0, result.output
+        assert "5m ago" in result.output
+
+    @patch("hive_cli.commands._read_retained")
+    @patch("hive_cli.commands.time")
+    def test_status_human_readable_age_hours(self, mock_time, mock_read, runner, config_file):
+        """Timestamps < 1d ago should show as 'Xh ago'."""
+        current_time = 1700000100.0
+        mock_time.time.return_value = current_time
+
+        mock_read.return_value = [
+            {"node_id": "older-node", "status": "online", "last_seen": int(current_time - 7200)},
+        ]
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "status",
+        ])
+
+        assert result.exit_code == 0, result.output
+        assert "2h ago" in result.output
+
+    @patch("hive_cli.commands._read_retained")
+    @patch("hive_cli.commands.time")
+    def test_status_human_readable_age_days(self, mock_time, mock_read, runner, config_file):
+        """Timestamps >= 1d ago should show as 'Xd ago'."""
+        current_time = 1700000100.0
+        mock_time.time.return_value = current_time
+
+        mock_read.return_value = [
+            {"node_id": "ancient-node", "status": "online", "last_seen": int(current_time - 172800)},
+        ]
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "status",
+        ])
+
+        assert result.exit_code == 0, result.output
+        assert "2d ago" in result.output
+
+    @patch("hive_cli.commands._read_retained")
+    def test_status_non_integer_last_seen(self, mock_read, runner, config_file):
+        """Non-integer last_seen values should display as-is without crashing."""
+        mock_read.return_value = [
+            {"node_id": "weird-node", "status": "online", "last_seen": "some-string"},
+        ]
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "status",
+        ])
+
+        assert result.exit_code == 0, result.output
+        assert "weird-node" in result.output
+        assert "some-string" in result.output
+
 
 # ── roster command ──────────────────────────────────────────────────
 

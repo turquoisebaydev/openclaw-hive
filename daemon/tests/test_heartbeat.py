@@ -244,7 +244,8 @@ class TestPublishState:
 
         state = json.loads(call_args[0][1])
         assert state["node_id"] == "state-node"
-        assert state["status"] == "online"
+        # With no instances, there's no probe data, so status should be "starting"
+        assert state["status"] == "starting"
         assert state["daemon_node"] == "state-node"
 
     async def test_publishes_per_instance_state(self):
@@ -269,7 +270,8 @@ class TestPublishState:
         # Verify each state entry has the correct structure
         for call in client.publish.call_args_list:
             state = json.loads(call[0][1])
-            assert state["status"] == "online"
+            # With no probe data yet, status should be "starting"
+            assert state["status"] == "starting"
             assert state["daemon_node"] == "turq"
             assert "uptime_s" in state
             assert "known_peers" in state
@@ -323,6 +325,115 @@ class TestPublishState:
         assert "mini1" in states
         assert states["turq"]["daemon_node"] == "turq"
         assert states["mini1"]["daemon_node"] == "turq"
+
+    async def test_publish_state_starting_status_no_probe(self):
+        """When no probe data exists, status should be 'starting'."""
+        config = _make_config(
+            node_id="turq",
+            oc_instances=[OcInstance(name="turq")],
+        )
+        client = _make_mock_client()
+        mgr = HeartbeatManager(config, client)
+
+        # No probe data yet
+        await mgr.publish_state()
+
+        state = json.loads(client.publish.call_args[0][1])
+        assert state["status"] == "starting"
+
+    async def test_publish_state_online_status_gw_ok(self):
+        """When probe shows gw.rpcOk is True, status should be 'online'."""
+        config = _make_config(
+            node_id="turq",
+            oc_instances=[OcInstance(name="turq")],
+        )
+        client = _make_mock_client()
+        mgr = HeartbeatManager(config, client)
+
+        # Simulate probe data with working gateway
+        mgr._probe["turq"] = {
+            "ts": int(time.time()),
+            "gw": {"rpcOk": True, "port": 18789},
+        }
+
+        await mgr.publish_state()
+
+        state = json.loads(client.publish.call_args[0][1])
+        assert state["status"] == "online"
+
+    async def test_publish_state_degraded_status_gw_not_ok(self):
+        """When probe shows gw.rpcOk is False, status should be 'degraded'."""
+        config = _make_config(
+            node_id="turq",
+            oc_instances=[OcInstance(name="turq")],
+        )
+        client = _make_mock_client()
+        mgr = HeartbeatManager(config, client)
+
+        # Simulate probe data with failing gateway
+        mgr._probe["turq"] = {
+            "ts": int(time.time()),
+            "gw": {"rpcOk": False, "error": "connection refused"},
+        }
+
+        await mgr.publish_state()
+
+        state = json.loads(client.publish.call_args[0][1])
+        assert state["status"] == "degraded"
+
+    async def test_publish_state_degraded_status_gw_missing(self):
+        """When probe exists but gw field is missing, status should be 'degraded'."""
+        config = _make_config(
+            node_id="turq",
+            oc_instances=[OcInstance(name="turq")],
+        )
+        client = _make_mock_client()
+        mgr = HeartbeatManager(config, client)
+
+        # Simulate probe data without gw field
+        mgr._probe["turq"] = {
+            "ts": int(time.time()),
+        }
+
+        await mgr.publish_state()
+
+        state = json.loads(client.publish.call_args[0][1])
+        assert state["status"] == "degraded"
+
+    async def test_publish_state_multiple_instances_different_statuses(self):
+        """Multiple instances can have different statuses based on their probe data."""
+        config = _make_config(
+            node_id="turq",
+            oc_instances=[
+                OcInstance(name="turq"),
+                OcInstance(name="mini1"),
+                OcInstance(name="mini2"),
+            ],
+        )
+        client = _make_mock_client()
+        mgr = HeartbeatManager(config, client)
+
+        # Different probe states
+        mgr._probe["turq"] = {
+            "ts": int(time.time()),
+            "gw": {"rpcOk": True, "port": 18789},
+        }
+        mgr._probe["mini1"] = {
+            "ts": int(time.time()),
+            "gw": {"rpcOk": False, "error": "timeout"},
+        }
+        # mini2 has no probe data (starting)
+
+        await mgr.publish_state()
+
+        states = {}
+        for call in client.publish.call_args_list:
+            state = json.loads(call[0][1])
+            states[state["node_id"]] = state
+
+        assert states["turq"]["status"] == "online"
+        assert states["mini1"]["status"] == "degraded"
+        assert states["mini2"]["status"] == "starting"
 
 
 class TestStartStop:

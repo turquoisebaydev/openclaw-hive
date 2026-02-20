@@ -159,16 +159,24 @@ class HeartbeatManager:
             instance_names = [self._config.node_id]
 
         for name in instance_names:
+            # Derive status from probe results
+            probe = self._probe.get(name)
+            if probe is None:
+                derived_status = "starting"
+            elif probe.get("gw", {}).get("rpcOk") is True:
+                derived_status = "online"
+            else:
+                derived_status = "degraded"
+
             state = {
                 "node_id": name,
-                "status": "online",
+                "status": derived_status,
                 "last_seen": int(time.time()),
                 "uptime_s": uptime_s,
                 "known_peers": known_peers,
                 "daemon_node": self._config.node_id,
             }
 
-            probe = self._probe.get(name)
             if isinstance(probe, dict) and probe:
                 # Deterministic gateway probe snapshot (no LLM calls).
                 state["oc"] = probe

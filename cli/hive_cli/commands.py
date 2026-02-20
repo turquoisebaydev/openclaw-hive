@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 
 import aiomqtt
@@ -22,6 +23,19 @@ from hive_daemon.envelope import (
 
 def _get_config(ctx: click.Context) -> HiveConfig:
     return ctx.obj["config"]
+
+
+def _format_age(ts: int) -> str:
+    """Format a timestamp as human-readable age (e.g., '5s ago', '2m ago', '3h ago')."""
+    age_s = time.time() - ts
+    if age_s < 60:
+        return f"{int(age_s)}s ago"
+    elif age_s < 3600:
+        return f"{int(age_s / 60)}m ago"
+    elif age_s < 86400:
+        return f"{int(age_s / 3600)}h ago"
+    else:
+        return f"{int(age_s / 86400)}d ago"
 
 
 def _mqtt_client(cfg: HiveConfig) -> aiomqtt.Client:
@@ -209,13 +223,24 @@ def status(ctx: click.Context, as_json: bool) -> None:
         click.echo(json.dumps(results, indent=2))
         return
 
+    # Staleness threshold in seconds
+    stale_threshold_s = 30
+
     click.echo(f"{'NODE':<20} {'STATUS':<10} {'GW':<4} {'CRON':<5} {'ERR_1H':<6} {'LAST SEEN'}")
     click.echo("-" * 70)
 
     for entry in results:
         node = entry.get("node_id", "?")
         state = entry.get("status", "?")
-        last_seen = entry.get("last_seen", "?")
+        last_seen_raw = entry.get("last_seen")
+
+        # Apply staleness detection
+        if isinstance(last_seen_raw, int):
+            if time.time() - last_seen_raw > stale_threshold_s:
+                state = "stale"
+            last_seen = _format_age(last_seen_raw)
+        else:
+            last_seen = str(last_seen_raw) if last_seen_raw is not None else "?"
 
         oc = entry.get("oc") if isinstance(entry.get("oc"), dict) else {}
         gw = oc.get("gw") if isinstance(oc.get("gw"), dict) else {}
