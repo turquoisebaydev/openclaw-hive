@@ -40,7 +40,11 @@ hive-cli send \
   --text "your message" \
   [--action <handler-name>] \
   [--urgency now|later]
+  # --urgency now  → wakes the target node immediately (bypasses heartbeat wait)
+  # --urgency later → default; node picks it up on its next heartbeat poll
 ```
+
+**`--urgency now` wakes the target node immediately**, bypassing its heartbeat interval. Use it whenever you need a prompt response. Without it (`--urgency later`, the default), the node picks up the message on its next heartbeat poll (up to 55 min wait).
 
 **Fire-and-forget is the default and preferred pattern.** Use this for:
 - Tasks where you don't need the result back immediately
