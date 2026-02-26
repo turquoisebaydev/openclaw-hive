@@ -361,7 +361,12 @@ async def run_daemon(config: HiveConfig) -> None:
         loop.add_signal_handler(sig, shutdown.set)
 
     # Set up dispatcher
-    dispatcher = Dispatcher(config.handler_dir, timeout=config.handler_timeout)
+    dispatcher = Dispatcher(
+        config.handler_dir,
+        timeout=config.handler_timeout,
+        oc_instances=config.oc_instances,
+        node_id=config.node_id,
+    )
     dispatcher.discover()
 
     # Set up OC bridge (reply publisher wired after MQTT connect)

@@ -60,16 +60,17 @@ def _sanitize_env(base: dict[str, str] | None = None) -> dict[str, str]:
 
 async def _run_openclaw_json(
     *,
+    openclaw_cmd: str,
     profile: str | None,
     args: list[str],
     timeout_s: float,
     extra_env: dict[str, str] | None = None,
 ) -> tuple[bool, dict[str, Any] | None, str]:
-    """Run `openclaw ...` and parse stdout as JSON.
+    """Run `openclaw ...` (or configured equivalent) and parse stdout as JSON.
 
     Returns: (ok, json_obj_or_none, err_str)
     """
-    cmd = ["openclaw"]
+    cmd = [openclaw_cmd]
     if profile:
         cmd.extend(["--profile", profile])
     cmd.extend(args)
@@ -86,7 +87,7 @@ async def _run_openclaw_json(
             env=env,
         )
     except FileNotFoundError:
-        return False, None, "openclaw CLI not found"
+        return False, None, f"OpenClaw CLI not found: {openclaw_cmd}"
 
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
@@ -277,6 +278,7 @@ async def probe_instance(inst: OcInstance, *, cron_timeout_s: float = 5.0) -> Pr
     """Probe a single configured OC instance deterministically."""
     ts = int(time.time())
     profile = inst.profile
+    openclaw_cmd = inst.resolved_openclaw_cmd
     state_dir = _state_dir_for_profile(profile)
 
     # --- gateway RPC probe via cron status ---
@@ -286,6 +288,7 @@ async def probe_instance(inst: OcInstance, *, cron_timeout_s: float = 5.0) -> Pr
         "rpcOk": False,
         "port": inst.port,
         "profile": profile,
+        "openclawCmd": openclaw_cmd,
         "error": None,
     }
 
@@ -293,6 +296,7 @@ async def probe_instance(inst: OcInstance, *, cron_timeout_s: float = 5.0) -> Pr
     cron_list_summary: dict[str, Any] = {}
 
     ok1, st, err1 = await _run_openclaw_json(
+        openclaw_cmd=openclaw_cmd,
         profile=profile,
         args=["cron", "status", "--json", "--timeout", "5000"],
         timeout_s=cron_timeout_s,
@@ -306,6 +310,7 @@ async def probe_instance(inst: OcInstance, *, cron_timeout_s: float = 5.0) -> Pr
         }
 
         ok2, lst, err2 = await _run_openclaw_json(
+            openclaw_cmd=openclaw_cmd,
             profile=profile,
             args=["cron", "list", "--json", "--timeout", "5000"],
             timeout_s=cron_timeout_s,
@@ -324,6 +329,7 @@ async def probe_instance(inst: OcInstance, *, cron_timeout_s: float = 5.0) -> Pr
     # --- provider usage snapshot (no gateway) ---
     usage_summary: dict[str, Any] = {}
     ok_u, u, err_u = await _run_openclaw_json(
+        openclaw_cmd=openclaw_cmd,
         profile=profile,
         args=["status", "--usage", "--json"],
         timeout_s=5.0,

@@ -115,8 +115,8 @@ class OcBridge:
         return f"hive-{instance.name}-{day}"
 
     def _build_command(self, instance: OcInstance, text: str, agent_id: str, *, session_override: str | None = None) -> list[str]:
-        """Build the openclaw CLI command for a given instance."""
-        cmd = ["openclaw"]
+        """Build the OpenClaw CLI command for a given instance."""
+        cmd = [instance.resolved_openclaw_cmd]
         if instance.profile:
             cmd.extend(["--profile", instance.profile])
 
@@ -320,13 +320,15 @@ class OcBridge:
 
         except FileNotFoundError:
             log.error(
-                "openclaw CLI not found — OC may not be installed. "
+                "OpenClaw CLI not found (%r) — OC may not be installed. "
                 "Skipping injection for instance %r",
+                instance.resolved_openclaw_cmd,
                 instance.name,
             )
         except OSError as exc:
             log.error(
-                "failed to run openclaw for instance %r: %s",
+                "failed to run OpenClaw command %r for instance %r: %s",
+                instance.resolved_openclaw_cmd,
                 instance.name,
                 exc,
             )

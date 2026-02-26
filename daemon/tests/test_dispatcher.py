@@ -8,13 +8,14 @@ from pathlib import Path
 
 import pytest
 
+from hive_daemon.config import OcInstance
 from hive_daemon.dispatcher import Dispatcher, DispatchResult, discover_handlers
 from hive_daemon.envelope import Envelope
 
 
-def _make_envelope(action: str | None = "test-action") -> Envelope:
+def _make_envelope(action: str | None = "test-action", *, to: str = "node-b") -> Envelope:
     return Envelope(
-        v=1, id="dispatch-1", ts=1000000, from_="node-a", to="node-b",
+        v=1, id="dispatch-1", ts=1000000, from_="node-a", to=to,
         ch="command", urgency="now", text="run test action", action=action,
     )
 
@@ -177,6 +178,84 @@ json.dump({"all_fields_present": True, "action": data["action"]}, sys.stdout)
         parsed = result.result_json()
         assert parsed["all_fields_present"] is True
         assert parsed["action"] == "check-envelope"
+
+    async def test_dispatch_sets_instance_specific_openclaw_env(self, tmp_path: Path):
+        """Handlers get per-instance OpenClaw command via environment."""
+        _write_script(tmp_path / "check-env", """\
+import os, json, sys
+json.dump({
+  "cmd": os.environ.get("HIVE_OPENCLAW_CMD"),
+  "instance": os.environ.get("HIVE_OC_INSTANCE"),
+  "profile": os.environ.get("HIVE_OC_PROFILE"),
+  "port": os.environ.get("HIVE_OC_PORT"),
+  "agent": os.environ.get("HIVE_OC_AGENT_ID"),
+}, sys.stdout)
+""")
+        d = Dispatcher(
+            tmp_path,
+            timeout=10,
+            oc_instances=[
+                OcInstance(name="turq", openclaw_cmd="/opt/turq/openclaw"),
+                OcInstance(name="mini1", profile="mini1", port=18889, agent_id="default", openclaw_cmd="/opt/mini1/openclaw"),
+            ],
+            node_id="turq",
+        )
+        d.discover()
+
+        env = _make_envelope(action="check-env", to="mini1")
+        result = await d.dispatch(env)
+
+        assert result.success
+        parsed = result.result_json()
+        assert parsed["cmd"] == "/opt/mini1/openclaw"
+        assert parsed["instance"] == "mini1"
+        assert parsed["profile"] == "mini1"
+        assert parsed["port"] == "18889"
+        assert parsed["agent"] == "default"
+
+    async def test_dispatch_sets_default_openclaw_env_when_target_unknown(self, tmp_path: Path):
+        _write_script(tmp_path / "check-env", """\
+import os, json, sys
+json.dump({
+  "cmd": os.environ.get("HIVE_OPENCLAW_CMD"),
+  "instance": os.environ.get("HIVE_OC_INSTANCE"),
+}, sys.stdout)
+""")
+        d = Dispatcher(
+            tmp_path,
+            timeout=10,
+            oc_instances=[OcInstance(name="mini1", openclaw_cmd="/opt/mini1/openclaw")],
+            node_id="turq",
+        )
+        d.discover()
+
+        env = _make_envelope(action="check-env", to="unknown-target")
+        result = await d.dispatch(env)
+
+        assert result.success
+        parsed = result.result_json()
+        assert parsed["cmd"] == "openclaw"
+        assert parsed["instance"] is None
+
+    async def test_dispatch_broadcast_uses_single_instance_openclaw_cmd(self, tmp_path: Path):
+        _write_script(tmp_path / "check-env", """\
+import os, json, sys
+json.dump({"cmd": os.environ.get("HIVE_OPENCLAW_CMD")}, sys.stdout)
+""")
+        d = Dispatcher(
+            tmp_path,
+            timeout=10,
+            oc_instances=[OcInstance(name="pg1", openclaw_cmd="/opt/pg1/openclaw")],
+            node_id="pg1",
+        )
+        d.discover()
+
+        env = _make_envelope(action="check-env", to="all")
+        result = await d.dispatch(env)
+
+        assert result.success
+        parsed = result.result_json()
+        assert parsed["cmd"] == "/opt/pg1/openclaw"
 
 
 class TestDispatchResult:

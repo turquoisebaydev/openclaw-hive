@@ -226,8 +226,8 @@ def status(ctx: click.Context, as_json: bool) -> None:
     # Staleness threshold in seconds
     stale_threshold_s = 30
 
-    click.echo(f"{'NODE':<20} {'STATUS':<10} {'GW':<4} {'CRON':<5} {'ERR_1H':<6} {'LAST SEEN'}")
-    click.echo("-" * 70)
+    click.echo(f"{'NODE':<20} {'STATUS':<10} {'GW':<4} {'CRON':<5} {'ERR_1H':<6} {'OC_CMD':<14} {'LAST SEEN'}")
+    click.echo("-" * 88)
 
     for entry in results:
         node = entry.get("node_id", "?")
@@ -261,7 +261,14 @@ def status(ctx: click.Context, as_json: bool) -> None:
                 err_total += v
         err_cell = str(err_total)
 
-        click.echo(f"{str(node):<20} {str(state):<10} {gw_cell:<4} {cron_cell:<5} {err_cell:<6} {last_seen}")
+        cmd_cell = "?"
+        cmd_raw = gw.get("openclawCmd")
+        if isinstance(cmd_raw, str) and cmd_raw.strip():
+            cmd_cell = Path(cmd_raw).name or cmd_raw
+            if len(cmd_cell) > 14:
+                cmd_cell = cmd_cell[:11] + "..."
+
+        click.echo(f"{str(node):<20} {str(state):<10} {gw_cell:<4} {cron_cell:<5} {err_cell:<6} {cmd_cell:<14} {last_seen}")
 
 
 @click.command()

@@ -34,6 +34,7 @@ port = 18789
 [[oc_instances]]
 name = "mini1-18889"
 port = 18889
+openclaw_cmd = "/opt/openclaw-mini1/bin/openclaw"
 
 [logging]
 level = "DEBUG"
@@ -73,6 +74,9 @@ class TestLoadConfig:
         assert cfg.oc_instances[0].profile == "turq"
         assert cfg.oc_instances[1].name == "mini1-18889"
         assert cfg.oc_instances[1].profile is None
+        assert cfg.oc_instances[1].openclaw_cmd == "/opt/openclaw-mini1/bin/openclaw"
+        assert cfg.oc_instances[0].resolved_openclaw_cmd == "openclaw"
+        assert cfg.oc_instances[1].resolved_openclaw_cmd == "/opt/openclaw-mini1/bin/openclaw"
 
     def test_missing_node_id(self, tmp_path: Path):
         f = tmp_path / "hive.toml"

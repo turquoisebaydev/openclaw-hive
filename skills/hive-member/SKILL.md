@@ -32,6 +32,14 @@ YOU  →  hive-cli reply/send  →  MQTT  →  their hive-daemon  →  system ev
 
 The CLI reads config from `~/.config/hive/hive.toml` by default. You can override this with `--config <path>`.
 
+If a node runs multiple gateways with different OpenClaw installs, each `[[oc_instances]]` entry can set:
+
+```toml
+openclaw_cmd = "/absolute/path/to/openclaw"
+```
+
+The daemon passes this through to deterministic handlers as `HIVE_OPENCLAW_CMD` (plus `HIVE_OC_INSTANCE` / `HIVE_OC_PROFILE`), so handlers should call `${HIVE_OPENCLAW_CMD:-openclaw}` instead of hardcoding `openclaw`.
+
 ### Send a message (fire-and-forget)
 ```bash
 hive-cli send \

@@ -491,6 +491,26 @@ class TestStatusCommand:
         assert "weird-node" in result.output
         assert "some-string" in result.output
 
+    @patch("hive_cli.commands._read_retained")
+    def test_status_shows_openclaw_command_column(self, mock_read, runner, config_file):
+        mock_read.return_value = [
+            {
+                "node_id": "mini1",
+                "status": "online",
+                "last_seen": 1700000100,
+                "oc": {"gw": {"rpcOk": True, "openclawCmd": "/opt/mini1/bin/openclaw"}},
+            },
+        ]
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "status",
+        ])
+
+        assert result.exit_code == 0, result.output
+        assert "OC_CMD" in result.output
+        assert "openclaw" in result.output
+
 
 # ── roster command ──────────────────────────────────────────────────
 

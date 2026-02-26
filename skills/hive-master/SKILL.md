@@ -23,6 +23,17 @@ hive-cli --config /path/to/hive.toml status
 hive-cli --config /path/to/hive.toml roster
 ```
 
+For mixed installs, set `openclaw_cmd` per gateway in `hive.toml`:
+
+```toml
+[[oc_instances]]
+name = "mini1"
+profile = "mini1"
+openclaw_cmd = "/opt/openclaw-mini1/bin/openclaw"
+```
+
+Deterministic action handlers receive this as `HIVE_OPENCLAW_CMD`, so scripts can call the right binary for each target gateway.
+
 ## Sending Commands
 
 ### Fire-and-forget (DEFAULT — use this most of the time)

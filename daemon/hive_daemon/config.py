@@ -6,6 +6,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+DEFAULT_OPENCLAW_CMD = "openclaw"
+
 
 @dataclass(frozen=True, slots=True)
 class MqttConfig:
@@ -27,6 +29,15 @@ class OcInstance:
     port: int | None = None
     # OpenClaw agent id to target for hive injections (e.g. "main" or "default").
     agent_id: str | None = None
+    # Optional path/command override for this instance's OpenClaw CLI.
+    # Examples: "openclaw", "/Users/turquoise/opt/openclaw-mini1/bin/openclaw"
+    openclaw_cmd: str | None = None
+
+    @property
+    def resolved_openclaw_cmd(self) -> str:
+        """Effective CLI command for this instance."""
+        cmd = (self.openclaw_cmd or "").strip()
+        return cmd or DEFAULT_OPENCLAW_CMD
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +102,7 @@ def load_config(path: Path) -> HiveConfig:
             profile=inst.get("profile"),
             port=inst.get("port"),
             agent_id=inst.get("agent_id") or inst.get("agent"),
+            openclaw_cmd=inst.get("openclaw_cmd") or inst.get("openclaw"),
         ))
 
     hb_section = raw.get("heartbeat", {})

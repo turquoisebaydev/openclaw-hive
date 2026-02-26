@@ -76,6 +76,13 @@ class TestBuildCommand:
         assert "--message" in cmd
         assert "hello" in cmd
 
+    def test_command_with_custom_openclaw_cmd(self):
+        bridge = OcBridge([])
+        inst = OcInstance(name="mini1", profile="mini1", openclaw_cmd="/opt/mini1/openclaw")
+        cmd = bridge._build_command(inst, "hello", "main")
+        assert cmd[0] == "/opt/mini1/openclaw"
+        assert cmd[1:3] == ["--profile", "mini1"]
+
 
 class TestInjectEvent:
     async def test_inject_to_all_instances(self):

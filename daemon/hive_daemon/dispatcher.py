@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from hive_daemon.config import DEFAULT_OPENCLAW_CMD, OcInstance
 from hive_daemon.envelope import Envelope
 
 log = logging.getLogger(__name__)
@@ -79,10 +80,58 @@ class Dispatcher:
     Call ``dispatch(envelope)`` to run the matching handler.
     """
 
-    def __init__(self, handler_dir: str | Path, timeout: int = 30) -> None:
+    def __init__(
+        self,
+        handler_dir: str | Path,
+        timeout: int = 30,
+        *,
+        oc_instances: list[OcInstance] | None = None,
+        node_id: str | None = None,
+    ) -> None:
         self._handler_dir = Path(handler_dir)
         self._timeout = timeout
         self._handlers: dict[str, Path] = {}
+        self._node_id = node_id
+        self._instances = oc_instances or []
+        self._instance_by_name = {inst.name: inst for inst in self._instances}
+
+    def _resolve_target_instance(self, envelope: Envelope) -> OcInstance | None:
+        """Resolve the envelope target to a configured OC instance, if possible."""
+        target = envelope.to
+        if target and target != "all":
+            inst = self._instance_by_name.get(target)
+            if inst is not None:
+                return inst
+
+        # Single-instance daemons can still provide deterministic handler env
+        # when target is broadcast ("all") or omitted.
+        if target in (None, "", "all") and len(self._instances) == 1:
+            return self._instances[0]
+
+        # If node_id itself matches a managed instance name, allow that too.
+        if self._node_id and target == self._node_id:
+            return self._instance_by_name.get(self._node_id)
+
+        return None
+
+    def _handler_env(self, envelope: Envelope) -> dict[str, str]:
+        """Build environment variables for deterministic handler subprocesses."""
+        env = dict(os.environ)
+        inst = self._resolve_target_instance(envelope)
+
+        cmd = DEFAULT_OPENCLAW_CMD
+        if inst is not None:
+            cmd = inst.resolved_openclaw_cmd
+            env["HIVE_OC_INSTANCE"] = inst.name
+            if inst.profile:
+                env["HIVE_OC_PROFILE"] = inst.profile
+            if inst.port is not None:
+                env["HIVE_OC_PORT"] = str(inst.port)
+            if inst.agent_id:
+                env["HIVE_OC_AGENT_ID"] = inst.agent_id
+
+        env["HIVE_OPENCLAW_CMD"] = cmd
+        return env
 
     def discover(self) -> dict[str, Path]:
         """Discover (or re-discover) available handlers. Returns the handler map."""
@@ -114,7 +163,13 @@ class Dispatcher:
             raise KeyError(f"no handler for action: {action!r}")
 
         envelope_json = json.dumps(envelope.to_json())
-        log.info("dispatching action %r to %s", action, handler_path)
+        handler_env = self._handler_env(envelope)
+        log.info(
+            "dispatching action %r to %s (HIVE_OPENCLAW_CMD=%r)",
+            action,
+            handler_path,
+            handler_env.get("HIVE_OPENCLAW_CMD"),
+        )
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -122,6 +177,7 @@ class Dispatcher:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=handler_env,
             )
 
             try:
