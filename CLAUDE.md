@@ -6,6 +6,14 @@ Hive is an inter-gateway coordination layer for OpenClaw clusters. It connects i
 
 **Read `docs/protocol.md` for the full design document before making architectural decisions.**
 
+## Current Priorities (2026-03)
+
+- Implement optional Discord announcements for hive message send/receive events.
+- Keep announcements off by default; ensure failures are non-fatal.
+- Verify and preserve per-instance `openclaw_cmd` behavior for OC bridge/probe/handler environments.
+- Detailed feature spec: `docs/features/discord-announcements-and-openclaw-cmd.md`
+- Current task brief: `docs/tasks/2026-03-02-discord-announcements.md`
+
 ## Architecture
 
 ```
