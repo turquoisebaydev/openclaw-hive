@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 _MAX_TEXT_LEN = 80
 
 
-def _format_common(prefix: str, envelope: Envelope) -> str:
+def _format_common(prefix: str, envelope: Envelope, *, gw: str | None = None) -> str:
     """Format common announcement fields for send/recv events."""
     parts = [
         prefix,
@@ -34,6 +34,8 @@ def _format_common(prefix: str, envelope: Envelope) -> str:
         f"ts={envelope.ts}",
         f"text_len={len(envelope.text)}",
     ]
+    if gw:
+        parts.append(f"gw={gw}")
     if envelope.action:
         parts.append(f"action={envelope.action}")
     if envelope.corr:
@@ -46,14 +48,14 @@ def _format_common(prefix: str, envelope: Envelope) -> str:
     return " | ".join(parts)
 
 
-def format_send(envelope: Envelope) -> str:
+def format_send(envelope: Envelope, *, gw: str | None = None) -> str:
     """Format a compact send announcement line."""
-    return _format_common("HIVE SEND", envelope)
+    return _format_common("HIVE SEND", envelope, gw=gw)
 
 
-def format_recv(envelope: Envelope) -> str:
+def format_recv(envelope: Envelope, *, gw: str | None = None) -> str:
     """Format a compact receive announcement line."""
-    return _format_common("HIVE RECV", envelope)
+    return _format_common("HIVE RECV", envelope, gw=gw)
 
 
 class Announcer:
@@ -66,9 +68,10 @@ class Announcer:
         config: The announcements configuration block.
     """
 
-    def __init__(self, config: AnnouncementsConfig) -> None:
+    def __init__(self, config: AnnouncementsConfig, *, node_id: str | None = None) -> None:
         self._config = config
         self._discord = config.discord
+        self._node_id = node_id
 
     @property
     def send_enabled(self) -> bool:
@@ -92,14 +95,14 @@ class Announcer:
         """Announce an outbound send event. Non-fatal on failure."""
         if not self.send_enabled:
             return
-        text = format_send(envelope)
+        text = format_send(envelope, gw=self._node_id)
         await self._publish_discord(text)
 
     async def announce_recv(self, envelope: Envelope) -> None:
         """Announce an inbound receive event. Non-fatal on failure."""
         if not self.recv_enabled:
             return
-        text = format_recv(envelope)
+        text = format_recv(envelope, gw=self._node_id)
         await self._publish_discord(text)
 
     async def _publish_discord(self, text: str) -> None:

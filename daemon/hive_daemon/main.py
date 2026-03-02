@@ -384,7 +384,7 @@ async def run_daemon(config: HiveConfig) -> None:
     corr_store = CorrelationStore()
 
     # Optional announcements (Discord, etc.)
-    announcer = Announcer(config.announcements)
+    announcer = Announcer(config.announcements, node_id=config.node_id)
 
     while not shutdown.is_set():
         try:

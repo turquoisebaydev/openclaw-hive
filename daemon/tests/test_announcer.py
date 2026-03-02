@@ -29,7 +29,7 @@ def _make_envelope(
 class TestFormatSend:
     def test_basic(self):
         env = _make_envelope()
-        text = format_send(env)
+        text = format_send(env, gw="turq")
         assert text.startswith("HIVE SEND")
         assert "from=turq" in text
         assert "to=pg1" in text
@@ -37,6 +37,8 @@ class TestFormatSend:
         assert "urgency=now" in text
         assert "ts=1000000" in text
         assert "text_len=10" in text
+        assert "gw=turq" in text
+        assert "gw=turq" in text
         assert "urgency=now" in text
         assert "ts=1000000" in text
         assert "text_len=10" in text
@@ -62,7 +64,7 @@ class TestFormatSend:
 class TestFormatRecv:
     def test_basic(self):
         env = _make_envelope(from_="pg1", to="turq")
-        text = format_recv(env)
+        text = format_recv(env, gw="turq")
         assert text.startswith("HIVE RECV")
         assert "from=pg1" in text
         assert "to=turq" in text
@@ -176,6 +178,16 @@ class TestAnnouncerEnabled:
         announcer = Announcer(_enabled_config(publish_send=True, publish_receive=False))
         assert announcer.send_enabled
         assert not announcer.recv_enabled
+
+
+class TestAnnouncerNodeId:
+    async def test_includes_local_gateway_node_id_in_published_text(self):
+        announcer = Announcer(_enabled_config(), node_id="turq")
+        with patch.object(announcer, "_publish_discord") as mock:
+            await announcer.announce_send(_make_envelope())
+            mock.assert_called_once()
+            text = mock.call_args[0][0]
+            assert "gw=turq" in text
 
 
 class TestAnnouncerFailureNonFatal:
