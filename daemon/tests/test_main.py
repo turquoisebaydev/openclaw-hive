@@ -231,6 +231,47 @@ class TestHandleMessage:
         await _handle_message(msg, cfg, router)
         assert len(received) == 1
 
+
+    async def test_own_instance_non_command_announced_as_recv(self):
+        """Non-command from a managed sibling instance should still be announced as recv."""
+        cfg = _config(
+            node_id="turq",
+            oc_instances=[OcInstance(name="mini1")],
+        )
+        router = Router()
+        received = []
+
+        async def handler(env: Envelope, target: str) -> None:
+            received.append(env)
+
+        router.register("response", handler)
+
+        announcer = MagicMock()
+        announcer.announce_recv = AsyncMock()
+        announcer.announce_send = AsyncMock()
+
+        payload = {**VALID_PAYLOAD, "from": "mini1", "to": "turq", "ch": "response"}
+        msg = _mqtt_msg("turq/hive/turq/response", payload)
+        await _handle_message(msg, cfg, router, announcer=announcer)
+
+        announcer.announce_recv.assert_awaited_once()
+        assert len(received) == 0
+
+    async def test_own_node_non_command_not_announced(self):
+        """Non-command from the daemon node_id itself should remain unannounced."""
+        cfg = _config(node_id="turq")
+        router = Router()
+
+        announcer = MagicMock()
+        announcer.announce_recv = AsyncMock()
+        announcer.announce_send = AsyncMock()
+
+        payload = {**VALID_PAYLOAD, "from": "turq", "to": "turq", "ch": "response"}
+        msg = _mqtt_msg("turq/hive/turq/response", payload)
+        await _handle_message(msg, cfg, router, announcer=announcer)
+
+        announcer.announce_recv.assert_not_awaited()
+
     async def test_target_passed_to_router(self):
         """The topic target is passed through to the router handler."""
         cfg = _config()

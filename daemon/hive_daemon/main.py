@@ -205,7 +205,13 @@ async def _handle_message(
 
         # Ignore all self-originated non-command messages (heartbeats, responses,
         # meta state echoes, etc.) to prevent feedback loops.
+        #
+        # Multi-home nuance: if a managed sibling instance (e.g. mini1) emits a
+        # non-command message addressed to this gateway, surface it as RECV
+        # announcement for gateway-level observability before skipping routing.
         if envelope.ch != "command":
+            if announcer is not None and envelope.from_ != config.node_id:
+                await announcer.announce_recv(envelope)
             log.debug("ignoring own non-command message %s (ch=%s target=%s)", envelope.id, envelope.ch, target)
             return
 
