@@ -243,3 +243,19 @@ class TestWebhookRequestHeaders:
             assert req.get_header("User-agent") is not None
             assert "openclaw-hive-daemon" in req.get_header("User-agent")
             assert req.get_header("Content-type") == "application/json"
+
+
+class TestAnnouncerFilters:
+    async def test_send_heartbeat_is_filtered(self):
+        announcer = Announcer(_enabled_config())
+        env = _make_envelope(ch="heartbeat")
+        with patch.object(announcer, "_publish_discord") as mock:
+            await announcer.announce_send(env)
+            mock.assert_not_called()
+
+    async def test_recv_heartbeat_is_filtered(self):
+        announcer = Announcer(_enabled_config())
+        env = _make_envelope(ch="heartbeat")
+        with patch.object(announcer, "_publish_discord") as mock:
+            await announcer.announce_recv(env)
+            mock.assert_not_called()

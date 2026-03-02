@@ -95,12 +95,16 @@ class Announcer:
         """Announce an outbound send event. Non-fatal on failure."""
         if not self.send_enabled:
             return
+        if envelope.ch == "heartbeat":
+            return
         text = format_send(envelope, gw=self._node_id)
         await self._publish_discord(text)
 
     async def announce_recv(self, envelope: Envelope) -> None:
         """Announce an inbound receive event. Non-fatal on failure."""
         if not self.recv_enabled:
+            return
+        if envelope.ch == "heartbeat":
             return
         text = format_recv(envelope, gw=self._node_id)
         await self._publish_discord(text)
