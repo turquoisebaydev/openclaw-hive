@@ -1,6 +1,10 @@
 """Optional Discord announcements for hive send/receive events.
 
 Publishes compact one-line summaries to a Discord webhook when enabled.
+When threading is enabled, groups correlated events into Discord threads
+using the Discord bot API, falling back to channel-level webhook posts
+on failure.
+
 All publish failures are non-fatal — logged as warnings, never breaking
 the core send/receive flow.
 """
@@ -13,14 +17,18 @@ import logging
 import urllib.request
 import urllib.error
 from functools import partial
+from pathlib import Path
 
 from hive_daemon.config import AnnouncementsConfig
 from hive_daemon.envelope import Envelope
+from hive_daemon.thread_map import ThreadMap, ThreadEntry, resolve_thread_key
 
 log = logging.getLogger(__name__)
 
 # Maximum text length included in announcements (avoid leaking large payloads).
 _MAX_TEXT_LEN = 80
+
+_USER_AGENT = "openclaw-hive-daemon/0.1 (+https://github.com/turquoisebaydev/openclaw-hive)"
 
 
 def _text_preview(raw: str, max_len: int = _MAX_TEXT_LEN) -> str:
@@ -67,20 +75,62 @@ def format_recv(envelope: Envelope, *, gw: str | None = None) -> str:
     return _format_common("HIVE RECV", envelope, gw=gw)
 
 
+def _format_thread_parent(envelope: Envelope) -> str:
+    """Format the parent/root message for a new thread."""
+    parts = [
+        "HIVE FLOW",
+        f"corr={envelope.corr or envelope.id}",
+        f"from={envelope.from_}",
+        f"to={envelope.to}",
+    ]
+    if envelope.action:
+        parts.append(f"action={envelope.action}")
+    return " | ".join(parts)
+
+
 class Announcer:
     """Publishes hive event announcements to Discord.
 
     Safe to call even when disabled — methods return immediately.
     All publish errors are caught and logged as warnings.
 
+    When threading is enabled, correlated events are grouped into
+    Discord threads via the bot API.  Thread mappings are persisted
+    on disk so they survive daemon restarts.
+
     Args:
         config: The announcements configuration block.
+        node_id: Local gateway identifier for gw= field.
+        bot_token: Discord bot token for thread operations (optional).
+        channel_id: Discord channel snowflake ID for thread operations (optional).
+        thread_map: Override the ThreadMap instance (mainly for testing).
     """
 
-    def __init__(self, config: AnnouncementsConfig, *, node_id: str | None = None) -> None:
+    def __init__(
+        self,
+        config: AnnouncementsConfig,
+        *,
+        node_id: str | None = None,
+        bot_token: str | None = None,
+        channel_id: str | None = None,
+        thread_map: ThreadMap | None = None,
+    ) -> None:
         self._config = config
         self._discord = config.discord
         self._node_id = node_id
+        self._bot_token = bot_token
+        self._channel_id = channel_id
+        self._threading = config.discord.threading
+
+        if self._threading.enabled and thread_map is not None:
+            self._thread_map = thread_map
+        elif self._threading.enabled:
+            self._thread_map = ThreadMap(
+                max_age_hours=self._threading.max_age_hours,
+                channel=self._discord.channel,
+            )
+        else:
+            self._thread_map = None
 
     @property
     def send_enabled(self) -> bool:
@@ -100,6 +150,15 @@ class Announcer:
             and self._discord.publish_receive
         )
 
+    @property
+    def threading_enabled(self) -> bool:
+        """Whether threaded posting is active."""
+        return (
+            self._threading.enabled
+            and self._bot_token is not None
+            and self._channel_id is not None
+        )
+
     async def announce_send(self, envelope: Envelope) -> None:
         """Announce an outbound send event. Non-fatal on failure."""
         if not self.send_enabled:
@@ -107,7 +166,7 @@ class Announcer:
         if envelope.ch == "heartbeat":
             return
         text = format_send(envelope, gw=self._node_id)
-        await self._publish_discord(text)
+        await self._publish(text, envelope)
 
     async def announce_recv(self, envelope: Envelope) -> None:
         """Announce an inbound receive event. Non-fatal on failure."""
@@ -116,7 +175,69 @@ class Announcer:
         if envelope.ch == "heartbeat":
             return
         text = format_recv(envelope, gw=self._node_id)
-        await self._publish_discord(text)
+        await self._publish(text, envelope)
+
+    async def _publish(self, text: str, envelope: Envelope) -> None:
+        """Route to threaded or channel-level posting."""
+        if self.threading_enabled:
+            await self._publish_threaded(text, envelope)
+        else:
+            await self._publish_discord(text)
+
+    # -- Threaded posting (Discord bot API) --
+
+    async def _publish_threaded(self, text: str, envelope: Envelope) -> None:
+        """Post into a correlated Discord thread. Falls back on failure."""
+        thread_key = resolve_thread_key(envelope.corr, envelope.id)
+        assert self._thread_map is not None
+
+        try:
+            loop = asyncio.get_running_loop()
+            entry = self._thread_map.get(thread_key)
+
+            if entry is not None:
+                # Try posting into existing thread
+                try:
+                    await loop.run_in_executor(
+                        None,
+                        partial(self._post_bot_message, entry.thread_id, text),
+                    )
+                    log.debug("threaded announcement posted to thread=%s", entry.thread_id)
+                    return
+                except Exception:
+                    # Thread may be archived/deleted — remove and recreate below
+                    log.debug("existing thread %s failed, will recreate", entry.thread_id)
+                    self._thread_map.remove(thread_key)
+
+            # Create parent message + thread
+            parent_text = _format_thread_parent(envelope)
+            parent_id = await loop.run_in_executor(
+                None,
+                partial(self._post_bot_message, self._channel_id, parent_text),
+            )
+            thread_name = f"{self._threading.thread_name_prefix} | {thread_key[:8]}"
+            thread_id = await loop.run_in_executor(
+                None,
+                partial(self._create_thread, self._channel_id, parent_id, thread_name),
+            )
+            self._thread_map.put(
+                thread_key,
+                thread_id=thread_id,
+                parent_message_id=parent_id,
+            )
+            # Post the actual event message into the new thread
+            await loop.run_in_executor(
+                None,
+                partial(self._post_bot_message, thread_id, text),
+            )
+            log.debug("threaded announcement: created thread=%s for key=%s", thread_id, thread_key)
+
+        except Exception as exc:
+            log.warning("threaded discord announcement failed: %s", exc)
+            if self._threading.fallback_to_channel:
+                await self._publish_discord(text)
+
+    # -- Channel-level posting (webhook) --
 
     async def _publish_discord(self, text: str) -> None:
         """POST a message to the Discord webhook. Non-fatal on any error."""
@@ -136,6 +257,8 @@ class Announcer:
                 exc,
             )
 
+    # -- Low-level HTTP helpers --
+
     @staticmethod
     def _post_webhook(url: str, text: str) -> None:
         """Synchronous HTTP POST to Discord webhook (runs in executor)."""
@@ -145,10 +268,44 @@ class Announcer:
             data=payload,
             headers={
                 "Content-Type": "application/json",
-                # Discord/webhook edge can reject default Python urllib UA.
-                # Use an explicit UA to align with successful curl/manual calls.
-                "User-Agent": "openclaw-hive-daemon/0.1 (+https://github.com/turquoisebaydev/openclaw-hive)",
+                "User-Agent": _USER_AGENT,
             },
             method="POST",
         )
         urllib.request.urlopen(req, timeout=10)
+
+    def _post_bot_message(self, channel_or_thread_id: str, text: str) -> str:
+        """Post a message via Discord bot API. Returns the message ID."""
+        url = f"https://discord.com/api/v10/channels/{channel_or_thread_id}/messages"
+        payload = json.dumps({"content": text}).encode()
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bot {self._bot_token}",
+                "User-Agent": _USER_AGENT,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        return data["id"]
+
+    def _create_thread(self, channel_id: str, message_id: str, name: str) -> str:
+        """Create a thread from an existing message. Returns the thread ID."""
+        url = f"https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}/threads"
+        payload = json.dumps({"name": name[:100]}).encode()
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bot {self._bot_token}",
+                "User-Agent": _USER_AGENT,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        return data["id"]

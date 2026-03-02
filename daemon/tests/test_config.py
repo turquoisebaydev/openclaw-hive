@@ -10,6 +10,7 @@ from hive_daemon.config import (
     HiveConfig,
     MqttConfig,
     OcInstance,
+    ThreadingConfig,
     load_config,
 )
 
@@ -81,6 +82,39 @@ id = "turq"
 [[oc_instances]]
 name = "mini1"
 openclaw = "/opt/mini1/bin/openclaw"
+"""
+
+THREADING_FULL_TOML = """\
+[node]
+id = "turq"
+
+[announcements]
+enabled = true
+
+[announcements.discord]
+enabled = true
+webhook_url = "https://discord.com/api/webhooks/123/abc"
+
+[announcements.discord.threading]
+enabled = true
+mode = "by_corr"
+thread_name_prefix = "ops"
+max_age_hours = 48
+fallback_to_channel = false
+"""
+
+THREADING_PARTIAL_TOML = """\
+[node]
+id = "turq"
+
+[announcements]
+enabled = true
+
+[announcements.discord]
+enabled = true
+
+[announcements.discord.threading]
+enabled = true
 """
 
 
@@ -174,6 +208,42 @@ class TestLoadConfig:
         cfg = load_config(f)
         assert cfg.oc_instances[0].openclaw_cmd == "/opt/mini1/bin/openclaw"
         assert cfg.oc_instances[0].resolved_openclaw_cmd == "/opt/mini1/bin/openclaw"
+
+    def test_threading_defaults_when_missing(self, tmp_path: Path):
+        """No threading section → all defaults (disabled)."""
+        f = tmp_path / "hive.toml"
+        f.write_text(MINIMAL_TOML)
+        cfg = load_config(f)
+        t = cfg.announcements.discord.threading
+        assert t.enabled is False
+        assert t.mode == "by_corr"
+        assert t.thread_name_prefix == "hive"
+        assert t.max_age_hours == 168
+        assert t.fallback_to_channel is True
+
+    def test_threading_full(self, tmp_path: Path):
+        """Explicit threading config is parsed correctly."""
+        f = tmp_path / "hive.toml"
+        f.write_text(THREADING_FULL_TOML)
+        cfg = load_config(f)
+        t = cfg.announcements.discord.threading
+        assert t.enabled is True
+        assert t.mode == "by_corr"
+        assert t.thread_name_prefix == "ops"
+        assert t.max_age_hours == 48
+        assert t.fallback_to_channel is False
+
+    def test_threading_partial_defaults(self, tmp_path: Path):
+        """Partial threading section → missing fields use defaults."""
+        f = tmp_path / "hive.toml"
+        f.write_text(THREADING_PARTIAL_TOML)
+        cfg = load_config(f)
+        t = cfg.announcements.discord.threading
+        assert t.enabled is True
+        assert t.mode == "by_corr"
+        assert t.thread_name_prefix == "hive"
+        assert t.max_age_hours == 168
+        assert t.fallback_to_channel is True
 
 
 class TestOcInstanceOpenclawCmd:

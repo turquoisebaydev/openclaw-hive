@@ -49,6 +49,17 @@ class HeartbeatConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ThreadingConfig:
+    """Discord thread-grouping settings for correlated announcements."""
+
+    enabled: bool = False
+    mode: str = "by_corr"
+    thread_name_prefix: str = "hive"
+    max_age_hours: int = 168
+    fallback_to_channel: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class DiscordAnnouncementConfig:
     """Discord-specific announcement settings."""
 
@@ -57,6 +68,7 @@ class DiscordAnnouncementConfig:
     webhook_url: str | None = None
     publish_send: bool = True
     publish_receive: bool = True
+    threading: ThreadingConfig = field(default_factory=ThreadingConfig)
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,12 +145,21 @@ def load_config(path: Path) -> HiveConfig:
 
     ann_section = raw.get("announcements", {})
     discord_section = ann_section.get("discord", {})
+    threading_section = discord_section.get("threading", {})
+    threading_cfg = ThreadingConfig(
+        enabled=threading_section.get("enabled", False),
+        mode=threading_section.get("mode", "by_corr"),
+        thread_name_prefix=threading_section.get("thread_name_prefix", "hive"),
+        max_age_hours=threading_section.get("max_age_hours", 168),
+        fallback_to_channel=threading_section.get("fallback_to_channel", True),
+    )
     discord_ann = DiscordAnnouncementConfig(
         enabled=discord_section.get("enabled", False),
         channel=discord_section.get("channel", "hive-announcements"),
         webhook_url=discord_section.get("webhook_url"),
         publish_send=discord_section.get("publish_send", True),
         publish_receive=discord_section.get("publish_receive", True),
+        threading=threading_cfg,
     )
     announcements = AnnouncementsConfig(
         enabled=ann_section.get("enabled", False),
