@@ -23,6 +23,14 @@ log = logging.getLogger(__name__)
 _MAX_TEXT_LEN = 80
 
 
+def _text_preview(raw: str, max_len: int = _MAX_TEXT_LEN) -> str:
+    """Return compact single-line preview text for announcements."""
+    compact = " ".join(raw.split())
+    if len(compact) <= max_len:
+        return compact
+    return compact[: max_len - 1] + "…"
+
+
 def _format_common(prefix: str, envelope: Envelope, *, gw: str | None = None) -> str:
     """Format common announcement fields for send/recv events."""
     parts = [
@@ -33,6 +41,7 @@ def _format_common(prefix: str, envelope: Envelope, *, gw: str | None = None) ->
         f"urgency={envelope.urgency}",
         f"ts={envelope.ts}",
         f"text_len={len(envelope.text)}",
+        f"text={_text_preview(envelope.text)!r}",
     ]
     if gw:
         parts.append(f"gw={gw}")

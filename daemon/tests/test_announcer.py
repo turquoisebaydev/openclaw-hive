@@ -37,6 +37,7 @@ class TestFormatSend:
         assert "urgency=now" in text
         assert "ts=1000000" in text
         assert "text_len=10" in text
+        assert "text='check disk'" in text
         assert "gw=turq" in text
         assert "gw=turq" in text
         assert "urgency=now" in text
@@ -69,6 +70,7 @@ class TestFormatRecv:
         assert "from=pg1" in text
         assert "to=turq" in text
         assert "type=command" in text
+        assert "text='check disk'" in text
         assert "id=msg-001" in text
 
     def test_with_action_and_corr(self):
@@ -98,6 +100,15 @@ class TestFormatCommonOptionalFields:
         assert "reply_to=msg-001" in text
         assert "ttl=30" in text
         assert "urgency=later" in text
+
+
+class TestTextPreview:
+    def test_truncates_long_text(self):
+        env = _make_envelope(text="x" * 200)
+        text = format_send(env)
+        assert "text_len=200" in text
+        assert "text='" in text
+        assert "…'" in text
 
 
 # --- Announcer class ---
