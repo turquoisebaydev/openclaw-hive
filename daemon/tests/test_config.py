@@ -4,7 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from hive_daemon.config import HiveConfig, MqttConfig, OcInstance, load_config
+from hive_daemon.config import (
+    AnnouncementsConfig,
+    DiscordAnnouncementConfig,
+    HiveConfig,
+    MqttConfig,
+    OcInstance,
+    load_config,
+)
 
 
 MINIMAL_TOML = """\
@@ -38,6 +45,42 @@ openclaw_cmd = "/opt/openclaw-mini1/bin/openclaw"
 
 [logging]
 level = "DEBUG"
+"""
+
+
+ANNOUNCEMENTS_TOML = """\
+[node]
+id = "turq"
+
+[announcements]
+enabled = true
+
+[announcements.discord]
+enabled = true
+channel = "ops-feed"
+webhook_url = "https://discord.com/api/webhooks/123/abc"
+publish_send = true
+publish_receive = false
+"""
+
+ANNOUNCEMENTS_PARTIAL_TOML = """\
+[node]
+id = "turq"
+
+[announcements]
+enabled = true
+
+[announcements.discord]
+enabled = true
+"""
+
+OPENCLAW_ALIAS_TOML = """\
+[node]
+id = "turq"
+
+[[oc_instances]]
+name = "mini1"
+openclaw = "/opt/mini1/bin/openclaw"
 """
 
 
@@ -87,3 +130,76 @@ class TestLoadConfig:
     def test_file_not_found(self, tmp_path: Path):
         with pytest.raises(FileNotFoundError):
             load_config(tmp_path / "nope.toml")
+
+    def test_announcements_defaults_when_missing(self, tmp_path: Path):
+        """Announcements section absent → all defaults (disabled)."""
+        f = tmp_path / "hive.toml"
+        f.write_text(MINIMAL_TOML)
+        cfg = load_config(f)
+        assert cfg.announcements.enabled is False
+        assert cfg.announcements.discord.enabled is False
+        assert cfg.announcements.discord.channel == "hive-announcements"
+        assert cfg.announcements.discord.webhook_url is None
+        assert cfg.announcements.discord.publish_send is True
+        assert cfg.announcements.discord.publish_receive is True
+
+    def test_announcements_full(self, tmp_path: Path):
+        """Explicit announcements config is parsed correctly."""
+        f = tmp_path / "hive.toml"
+        f.write_text(ANNOUNCEMENTS_TOML)
+        cfg = load_config(f)
+        assert cfg.announcements.enabled is True
+        assert cfg.announcements.discord.enabled is True
+        assert cfg.announcements.discord.channel == "ops-feed"
+        assert cfg.announcements.discord.webhook_url == "https://discord.com/api/webhooks/123/abc"
+        assert cfg.announcements.discord.publish_send is True
+        assert cfg.announcements.discord.publish_receive is False
+
+    def test_announcements_partial_defaults(self, tmp_path: Path):
+        """Partial announcements.discord → missing fields use defaults."""
+        f = tmp_path / "hive.toml"
+        f.write_text(ANNOUNCEMENTS_PARTIAL_TOML)
+        cfg = load_config(f)
+        assert cfg.announcements.enabled is True
+        assert cfg.announcements.discord.enabled is True
+        assert cfg.announcements.discord.channel == "hive-announcements"
+        assert cfg.announcements.discord.webhook_url is None
+        assert cfg.announcements.discord.publish_send is True
+        assert cfg.announcements.discord.publish_receive is True
+
+    def test_openclaw_alias_compatibility(self, tmp_path: Path):
+        """The 'openclaw' alias field is accepted as openclaw_cmd."""
+        f = tmp_path / "hive.toml"
+        f.write_text(OPENCLAW_ALIAS_TOML)
+        cfg = load_config(f)
+        assert cfg.oc_instances[0].openclaw_cmd == "/opt/mini1/bin/openclaw"
+        assert cfg.oc_instances[0].resolved_openclaw_cmd == "/opt/mini1/bin/openclaw"
+
+
+class TestOcInstanceOpenclawCmd:
+    """Regression tests for per-instance openclaw_cmd resolution."""
+
+    def test_default_fallback(self):
+        inst = OcInstance(name="node1")
+        assert inst.resolved_openclaw_cmd == "openclaw"
+
+    def test_explicit_cmd(self):
+        inst = OcInstance(name="node1", openclaw_cmd="/opt/oc/bin/openclaw")
+        assert inst.resolved_openclaw_cmd == "/opt/oc/bin/openclaw"
+
+    def test_empty_string_falls_back_to_default(self):
+        inst = OcInstance(name="node1", openclaw_cmd="")
+        assert inst.resolved_openclaw_cmd == "openclaw"
+
+    def test_whitespace_only_falls_back_to_default(self):
+        inst = OcInstance(name="node1", openclaw_cmd="   ")
+        assert inst.resolved_openclaw_cmd == "openclaw"
+
+    def test_none_falls_back_to_default(self):
+        inst = OcInstance(name="node1", openclaw_cmd=None)
+        assert inst.resolved_openclaw_cmd == "openclaw"
+
+    def test_preserves_exact_path(self):
+        path = "/Users/turquoise/opt/openclaw-mini1/current/bin/openclaw"
+        inst = OcInstance(name="mini1", openclaw_cmd=path)
+        assert inst.resolved_openclaw_cmd == path

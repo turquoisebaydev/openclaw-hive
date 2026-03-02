@@ -49,6 +49,25 @@ class HeartbeatConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class DiscordAnnouncementConfig:
+    """Discord-specific announcement settings."""
+
+    enabled: bool = False
+    channel: str = "hive-announcements"
+    webhook_url: str | None = None
+    publish_send: bool = True
+    publish_receive: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class AnnouncementsConfig:
+    """Top-level announcement settings."""
+
+    enabled: bool = False
+    discord: DiscordAnnouncementConfig = field(default_factory=DiscordAnnouncementConfig)
+
+
+@dataclass(frozen=True, slots=True)
 class HiveConfig:
     """Top-level hive daemon configuration."""
 
@@ -59,6 +78,7 @@ class HiveConfig:
     mqtt: MqttConfig = field(default_factory=MqttConfig)
     oc_instances: list[OcInstance] = field(default_factory=list)
     heartbeat: HeartbeatConfig = field(default_factory=HeartbeatConfig)
+    announcements: AnnouncementsConfig = field(default_factory=AnnouncementsConfig)
     log_level: str = "INFO"
 
     @property
@@ -111,6 +131,20 @@ def load_config(path: Path) -> HiveConfig:
         miss_threshold=hb_section.get("miss_threshold", 3),
     )
 
+    ann_section = raw.get("announcements", {})
+    discord_section = ann_section.get("discord", {})
+    discord_ann = DiscordAnnouncementConfig(
+        enabled=discord_section.get("enabled", False),
+        channel=discord_section.get("channel", "hive-announcements"),
+        webhook_url=discord_section.get("webhook_url"),
+        publish_send=discord_section.get("publish_send", True),
+        publish_receive=discord_section.get("publish_receive", True),
+    )
+    announcements = AnnouncementsConfig(
+        enabled=ann_section.get("enabled", False),
+        discord=discord_ann,
+    )
+
     return HiveConfig(
         node_id=node_id,
         topic_prefix=node_section.get("topic_prefix", "turq/hive"),
@@ -119,5 +153,6 @@ def load_config(path: Path) -> HiveConfig:
         mqtt=mqtt,
         oc_instances=oc_list,
         heartbeat=heartbeat,
+        announcements=announcements,
         log_level=raw.get("logging", {}).get("level", "INFO"),
     )

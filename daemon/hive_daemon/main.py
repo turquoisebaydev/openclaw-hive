@@ -14,6 +14,7 @@ from pathlib import Path
 
 import aiomqtt
 
+from hive_daemon.announcer import Announcer
 from hive_daemon.config import HiveConfig, load_config
 from hive_daemon.dispatcher import Dispatcher
 from hive_daemon.envelope import Envelope, EnvelopeError
@@ -138,6 +139,7 @@ async def _handle_message(
     router: Router,
     corr_store: CorrelationStore | None = None,
     seen_ids: set[str] | None = None,
+    announcer: Announcer | None = None,
 ) -> None:
     """Parse an MQTT message into an Envelope and route it."""
     topic = str(msg.topic)
@@ -198,6 +200,8 @@ async def _handle_message(
     if envelope.from_ in own_names:
         if corr_store is not None and envelope.ch == "command":
             corr_store.track(envelope)
+            if announcer is not None:
+                await announcer.announce_send(envelope)
 
         # Ignore all self-originated non-command messages (heartbeats, responses,
         # meta state echoes, etc.) to prevent feedback loops.
@@ -209,6 +213,10 @@ async def _handle_message(
         if target not in own_names and target != "all":
             log.debug("ignoring own command %s for non-local target=%s", envelope.id, target)
             return
+    else:
+        # Inbound message from another node — announce receive.
+        if announcer is not None:
+            await announcer.announce_recv(envelope)
 
     await router.route(envelope, target=target)
 
@@ -375,6 +383,9 @@ async def run_daemon(config: HiveConfig) -> None:
     # Correlation store for enriching responses with original command context
     corr_store = CorrelationStore()
 
+    # Optional announcements (Discord, etc.)
+    announcer = Announcer(config.announcements)
+
     while not shutdown.is_set():
         try:
             async with aiomqtt.Client(
@@ -434,7 +445,7 @@ async def run_daemon(config: HiveConfig) -> None:
                     async for msg in client.messages:
                         if shutdown.is_set():
                             break
-                        await _handle_message(msg, config, router, corr_store, seen_ids)
+                        await _handle_message(msg, config, router, corr_store, seen_ids, announcer)
                 finally:
                     await heartbeat_mgr.stop()
 
