@@ -33,7 +33,13 @@ class TestFormatSend:
         assert text.startswith("HIVE SEND")
         assert "from=turq" in text
         assert "to=pg1" in text
-        assert "ch=command" in text
+        assert "type=command" in text
+        assert "urgency=now" in text
+        assert "ts=1000000" in text
+        assert "text_len=10" in text
+        assert "urgency=now" in text
+        assert "ts=1000000" in text
+        assert "text_len=10" in text
         assert "id=msg-001" in text
 
     def test_with_action_and_corr(self):
@@ -60,7 +66,7 @@ class TestFormatRecv:
         assert text.startswith("HIVE RECV")
         assert "from=pg1" in text
         assert "to=turq" in text
-        assert "ch=command" in text
+        assert "type=command" in text
         assert "id=msg-001" in text
 
     def test_with_action_and_corr(self):
@@ -68,6 +74,28 @@ class TestFormatRecv:
         text = format_recv(env)
         assert "action=health-check" in text
         assert "corr=xyz789" in text
+
+
+class TestFormatCommonOptionalFields:
+    def test_includes_reply_to_and_ttl_when_present(self):
+        env = Envelope(
+            v=1,
+            id="msg-002",
+            ts=1000001,
+            from_="pg1",
+            to="turq",
+            ch="response",
+            urgency="later",
+            text="ok",
+            corr="corr-1",
+            reply_to="msg-001",
+            ttl=30,
+        )
+        text = format_recv(env)
+        assert "type=response" in text
+        assert "reply_to=msg-001" in text
+        assert "ttl=30" in text
+        assert "urgency=later" in text
 
 
 # --- Announcer class ---

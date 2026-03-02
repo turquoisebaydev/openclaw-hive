@@ -23,36 +23,37 @@ log = logging.getLogger(__name__)
 _MAX_TEXT_LEN = 80
 
 
-def format_send(envelope: Envelope) -> str:
-    """Format a compact send announcement line."""
+def _format_common(prefix: str, envelope: Envelope) -> str:
+    """Format common announcement fields for send/recv events."""
     parts = [
-        "HIVE SEND",
+        prefix,
         f"from={envelope.from_}",
         f"to={envelope.to}",
-        f"ch={envelope.ch}",
+        f"type={envelope.ch}",
+        f"urgency={envelope.urgency}",
+        f"ts={envelope.ts}",
+        f"text_len={len(envelope.text)}",
     ]
     if envelope.action:
         parts.append(f"action={envelope.action}")
     if envelope.corr:
         parts.append(f"corr={envelope.corr}")
+    if envelope.reply_to:
+        parts.append(f"reply_to={envelope.reply_to}")
+    if envelope.ttl is not None:
+        parts.append(f"ttl={envelope.ttl}")
     parts.append(f"id={envelope.id}")
     return " | ".join(parts)
+
+
+def format_send(envelope: Envelope) -> str:
+    """Format a compact send announcement line."""
+    return _format_common("HIVE SEND", envelope)
 
 
 def format_recv(envelope: Envelope) -> str:
     """Format a compact receive announcement line."""
-    parts = [
-        "HIVE RECV",
-        f"from={envelope.from_}",
-        f"to={envelope.to}",
-        f"ch={envelope.ch}",
-    ]
-    if envelope.action:
-        parts.append(f"action={envelope.action}")
-    if envelope.corr:
-        parts.append(f"corr={envelope.corr}")
-    parts.append(f"id={envelope.id}")
-    return " | ".join(parts)
+    return _format_common("HIVE RECV", envelope)
 
 
 class Announcer:
