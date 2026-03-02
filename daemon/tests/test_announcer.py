@@ -227,3 +227,19 @@ class TestAnnouncerFailureNonFatal:
         with patch.object(Announcer, "_post_webhook") as mock:
             await announcer.announce_send(_make_envelope())
             mock.assert_not_called()
+
+
+class TestWebhookRequestHeaders:
+    def test_post_webhook_sets_user_agent(self):
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.__enter__.return_value = mock_resp
+            mock_resp.__exit__.return_value = False
+            mock_urlopen.return_value = mock_resp
+
+            Announcer._post_webhook("https://discord.com/api/webhooks/test/hook", "hello")
+
+            req = mock_urlopen.call_args[0][0]
+            assert req.get_header("User-agent") is not None
+            assert "openclaw-hive-daemon" in req.get_header("User-agent")
+            assert req.get_header("Content-type") == "application/json"

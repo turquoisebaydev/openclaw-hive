@@ -130,7 +130,12 @@ class Announcer:
         req = urllib.request.Request(
             url,
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                # Discord/webhook edge can reject default Python urllib UA.
+                # Use an explicit UA to align with successful curl/manual calls.
+                "User-Agent": "openclaw-hive-daemon/0.1 (+https://github.com/turquoisebaydev/openclaw-hive)",
+            },
             method="POST",
         )
         urllib.request.urlopen(req, timeout=10)
