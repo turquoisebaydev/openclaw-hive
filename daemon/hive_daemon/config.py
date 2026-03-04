@@ -49,6 +49,26 @@ class HeartbeatConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class PresenceDiscoveryConfig:
+    """Settings for remote presence discovery."""
+
+    accept_remote: bool = True
+    prune_stale: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class PresenceConfig:
+    """Session presence registry settings."""
+
+    enabled: bool = True
+    interval_sec: int = 30
+    ttl_sec: int = 300
+    retain: bool = True
+    publish_task_details: bool = True
+    discovery: PresenceDiscoveryConfig = field(default_factory=PresenceDiscoveryConfig)
+
+
+@dataclass(frozen=True, slots=True)
 class ThreadingConfig:
     """Discord thread-grouping settings for correlated announcements."""
 
@@ -90,6 +110,7 @@ class HiveConfig:
     mqtt: MqttConfig = field(default_factory=MqttConfig)
     oc_instances: list[OcInstance] = field(default_factory=list)
     heartbeat: HeartbeatConfig = field(default_factory=HeartbeatConfig)
+    presence: PresenceConfig = field(default_factory=PresenceConfig)
     announcements: AnnouncementsConfig = field(default_factory=AnnouncementsConfig)
     log_level: str = "INFO"
 
@@ -143,6 +164,21 @@ def load_config(path: Path) -> HiveConfig:
         miss_threshold=hb_section.get("miss_threshold", 3),
     )
 
+    pres_section = raw.get("presence", {})
+    pres_disc_section = pres_section.get("discovery", {})
+    presence_discovery = PresenceDiscoveryConfig(
+        accept_remote=pres_disc_section.get("accept_remote", True),
+        prune_stale=pres_disc_section.get("prune_stale", True),
+    )
+    presence = PresenceConfig(
+        enabled=pres_section.get("enabled", True),
+        interval_sec=pres_section.get("interval_sec", 30),
+        ttl_sec=pres_section.get("ttl_sec", 300),
+        retain=pres_section.get("retain", True),
+        publish_task_details=pres_section.get("publish_task_details", True),
+        discovery=presence_discovery,
+    )
+
     ann_section = raw.get("announcements", {})
     discord_section = ann_section.get("discord", {})
     threading_section = discord_section.get("threading", {})
@@ -174,6 +210,7 @@ def load_config(path: Path) -> HiveConfig:
         mqtt=mqtt,
         oc_instances=oc_list,
         heartbeat=heartbeat,
+        presence=presence,
         announcements=announcements,
         log_level=raw.get("logging", {}).get("level", "INFO"),
     )

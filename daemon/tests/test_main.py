@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from hive_daemon.config import HiveConfig, MqttConfig, OcInstance
+from hive_daemon.config import HiveConfig, MqttConfig, OcInstance, PresenceConfig
 from hive_daemon.envelope import Envelope
 from hive_daemon.main import (
     _build_topics,
@@ -14,6 +14,7 @@ from hive_daemon.main import (
     _parse_topic_channel,
     setup_router,
 )
+from hive_daemon.presence import PresenceCache, PresenceRecord
 from hive_daemon.router import Router
 
 
@@ -286,6 +287,106 @@ class TestHandleMessage:
         msg = _mqtt_msg("turq/hive/turq-18789/command", VALID_PAYLOAD)
         await _handle_message(msg, cfg, router)
         assert targets == ["turq-18789"]
+
+
+class TestPresenceHandling:
+    async def test_presence_message_updates_cache(self):
+        """Inbound presence messages from remote nodes update the local cache."""
+        cfg = _config(node_id="turq-18789")
+        router = Router()
+        cache = PresenceCache()
+
+        presence_payload = {
+            "v": 1,
+            "kind": "session_presence",
+            "gw": "pg1",
+            "agent": "main",
+            "session": "sess-1",
+            "state": "active",
+            "status": "idle",
+            "updatedTs": 1000,
+            "ttlSec": 300,
+        }
+        msg = _mqtt_msg("turq/hive/presence/pg1/main/sess-1", presence_payload)
+        await _handle_message(msg, cfg, router, presence_cache=cache)
+
+        assert len(cache) == 1
+        record = cache.get("pg1/main/sess-1")
+        assert record is not None
+        assert record.gw == "pg1"
+
+    async def test_own_presence_message_ignored(self):
+        """Presence messages from own node are not cached."""
+        cfg = _config(
+            node_id="turq",
+            oc_instances=[OcInstance(name="turq")],
+        )
+        router = Router()
+        cache = PresenceCache()
+
+        presence_payload = {
+            "v": 1,
+            "kind": "session_presence",
+            "gw": "turq",
+            "agent": "main",
+            "session": "sess-1",
+            "state": "active",
+            "status": "idle",
+            "updatedTs": 1000,
+            "ttlSec": 300,
+        }
+        msg = _mqtt_msg("turq/hive/presence/turq/main/sess-1", presence_payload)
+        await _handle_message(msg, cfg, router, presence_cache=cache)
+
+        assert len(cache) == 0
+
+    async def test_invalid_presence_message_ignored(self):
+        """Malformed presence messages are silently dropped."""
+        cfg = _config()
+        router = Router()
+        cache = PresenceCache()
+
+        msg = _mqtt_msg("turq/hive/presence/pg1/main/sess-1", {"kind": "wrong"})
+        await _handle_message(msg, cfg, router, presence_cache=cache)
+        assert len(cache) == 0
+
+    async def test_presence_not_handled_when_cache_none(self):
+        """When presence_cache is None, presence topic messages are not processed."""
+        cfg = _config()
+        router = Router()
+
+        presence_payload = {
+            "v": 1,
+            "kind": "session_presence",
+            "gw": "pg1",
+            "agent": "main",
+            "session": "sess-1",
+            "state": "active",
+            "status": "idle",
+            "updatedTs": 1000,
+            "ttlSec": 300,
+        }
+        msg = _mqtt_msg("turq/hive/presence/pg1/main/sess-1", presence_payload)
+        # Should not raise — just ignored
+        await _handle_message(msg, cfg, router, presence_cache=None)
+
+    async def test_presence_topic_in_build_topics(self):
+        """Presence topic subscription is included when enabled."""
+        cfg = _config()
+        topics = _build_topics(cfg)
+        assert "turq/hive/presence/#" in topics
+
+    async def test_presence_topic_not_in_build_topics_when_disabled(self):
+        """Presence topic subscription is excluded when disabled."""
+        cfg = _config()
+        # Override presence to disabled
+        cfg = HiveConfig(
+            node_id="turq-18789",
+            topic_prefix="turq/hive",
+            presence=PresenceConfig(enabled=False),
+        )
+        topics = _build_topics(cfg)
+        assert "turq/hive/presence/#" not in topics
 
 
 class TestSetupRouter:

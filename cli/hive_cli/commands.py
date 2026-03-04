@@ -19,6 +19,11 @@ from hive_daemon.envelope import (
     VALID_CHANNELS,
     VALID_URGENCIES,
 )
+from hive_daemon.presence import (
+    PresenceCache,
+    PresenceRecord,
+    resolve_session_target,
+)
 
 
 def _get_config(ctx: click.Context) -> HiveConfig:
@@ -89,6 +94,45 @@ async def _publish_and_wait(
     return None
 
 
+async def _read_presence(cfg: HiveConfig, timeout: float = 2.0) -> PresenceCache:
+    """Read retained presence records from MQTT into a PresenceCache."""
+    topic_filter = f"{cfg.topic_prefix}/presence/#"
+    cache = PresenceCache()
+    async with _mqtt_client(cfg) as client:
+        await client.subscribe(topic_filter)
+        try:
+            async with asyncio.timeout(timeout):
+                async for message in client.messages:
+                    try:
+                        data = json.loads(message.payload.decode())
+                        record = PresenceRecord.from_dict(data)
+                        cache.update(record)
+                    except (json.JSONDecodeError, UnicodeDecodeError, ValueError, KeyError, TypeError):
+                        continue
+        except TimeoutError:
+            pass
+    return cache
+
+
+def _parse_session_target(target: str) -> tuple[str, str | None, str]:
+    """Parse a session target string into (gw, agent, session).
+
+    Accepts:
+        gw/agent/session  -> (gw, agent, session)
+        gw/session        -> (gw, None, session)
+    """
+    parts = target.split("/", 2)
+    if len(parts) == 3:
+        return parts[0], parts[1], parts[2]
+    elif len(parts) == 2:
+        return parts[0], None, parts[1]
+    else:
+        raise click.BadParameter(
+            f"invalid session target format: {target!r}. "
+            "Expected gw/agent/session or gw/session."
+        )
+
+
 async def _read_retained(cfg: HiveConfig, topic_filter: str, timeout: float = 2.0) -> list[dict]:
     """Subscribe to a topic, collect retained messages, then return.
 
@@ -113,7 +157,8 @@ async def _read_retained(cfg: HiveConfig, topic_filter: str, timeout: float = 2.
 
 
 @click.command()
-@click.option("--to", "to_node", required=True, help="Target node id (or 'all').")
+@click.option("--to", "to_node", required=False, default=None, help="Target node id (or 'all').")
+@click.option("--to-session", "to_session", default=None, help="Target session as gw/agent/session or gw/session.")
 @click.option("--ch", "channel", required=True, type=click.Choice(sorted(VALID_CHANNELS)), help="Message channel.")
 @click.option("--text", required=True, help="Message text.")
 @click.option("--action", default=None, help="Action name for handler dispatch.")
@@ -122,13 +167,35 @@ async def _read_retained(cfg: HiveConfig, topic_filter: str, timeout: float = 2.
 @click.option("--wait", "wait_timeout", default=None, type=float, help="Block up to N seconds for a correlated response.")
 @click.option("--session", default=None, help="Session key to route the response back to (stored locally, not sent over MQTT).")
 @click.pass_context
-def send(ctx: click.Context, to_node: str, channel: str, text: str, action: str | None, urgency: str, ttl: int | None, wait_timeout: float | None, session: str | None) -> None:
+def send(ctx: click.Context, to_node: str | None, to_session: str | None, channel: str, text: str, action: str | None, urgency: str, ttl: int | None, wait_timeout: float | None, session: str | None) -> None:
     """Publish an envelope to MQTT.
 
     With --wait, blocks until a correlated response arrives (or timeout).
     Prints the response envelope JSON on success, exits 1 on timeout.
+
+    Use --to-session to target a specific session (gw/agent/session or gw/session).
+    The presence cache is consulted to resolve the target deterministically.
     """
     cfg = _get_config(ctx)
+
+    # Validate: exactly one of --to or --to-session must be provided
+    if to_node is None and to_session is None:
+        raise click.UsageError("Either --to or --to-session is required.")
+    if to_node is not None and to_session is not None:
+        raise click.UsageError("Cannot use both --to and --to-session.")
+
+    # Session-targeted send: resolve via presence cache
+    if to_session is not None:
+        gw, agent, sess = _parse_session_target(to_session)
+        cache = asyncio.run(_read_presence(cfg))
+        result = resolve_session_target(cache, gw=gw, agent=agent, session=sess)
+        if not result.ok:
+            click.echo(json.dumps(result.error, indent=2), err=True)
+            ctx.exit(1)
+            return
+        # Resolved — route to the gateway node
+        to_node = result.record.gw
+
     # Use corr = envelope id so the responder's create_reply sets corr automatically
     env = create_envelope(
         from_=cfg.node_id,

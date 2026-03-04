@@ -651,3 +651,135 @@ class TestEnvelopeConstruction:
         assert "ttl" not in payload
         assert "corr" not in payload
         assert "replyTo" not in payload
+
+
+# ── session-targeted send ──────────────────────────────────────────
+
+class TestSessionTargetSend:
+
+    @patch("hive_cli.commands._mqtt_client")
+    @patch("hive_cli.commands._read_presence")
+    def test_to_session_resolved(self, mock_read_presence, mock_client_fn, runner, config_file):
+        """--to-session with a fresh presence record resolves and sends."""
+        from hive_daemon.presence import PresenceCache, PresenceRecord
+
+        cache = PresenceCache()
+        cache.update(PresenceRecord(
+            gw="pg1", agent="main", session="sess-1",
+            state="active", status="idle",
+            updated_ts=1000, ttl_sec=300,
+        ))
+        mock_read_presence.return_value = cache
+
+        client = _make_mock_client()
+        mock_client_fn.return_value = client
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "send",
+            "--to-session", "pg1/main/sess-1",
+            "--ch", "command",
+            "--text", "hello",
+        ])
+
+        assert result.exit_code == 0, result.output
+        assert "sent" in result.output
+        # Should route to the resolved gateway
+        assert "turq/hive/pg1/command" in result.output
+
+    @patch("hive_cli.commands._read_presence")
+    def test_to_session_not_found(self, mock_read_presence, runner, config_file):
+        """--to-session with missing session produces delivery_error."""
+        from hive_daemon.presence import PresenceCache
+
+        mock_read_presence.return_value = PresenceCache()
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "send",
+            "--to-session", "pg1/main/nonexistent",
+            "--ch", "command",
+            "--text", "hello",
+        ])
+
+        assert result.exit_code != 0
+        assert "SESSION_NOT_FOUND" in result.output
+
+    @patch("hive_cli.commands._mqtt_client")
+    @patch("hive_cli.commands._read_presence")
+    def test_to_session_shorthand(self, mock_read_presence, mock_client_fn, runner, config_file):
+        """--to-session with gw/session shorthand resolves agent automatically."""
+        from hive_daemon.presence import PresenceCache, PresenceRecord
+
+        cache = PresenceCache()
+        cache.update(PresenceRecord(
+            gw="pg1", agent="main", session="sess-1",
+            updated_ts=1000, ttl_sec=300,
+        ))
+        mock_read_presence.return_value = cache
+
+        client = _make_mock_client()
+        mock_client_fn.return_value = client
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "send",
+            "--to-session", "pg1/sess-1",
+            "--ch", "command",
+            "--text", "hello",
+        ])
+
+        assert result.exit_code == 0, result.output
+
+    @patch("hive_cli.commands._read_presence")
+    def test_to_session_ambiguous(self, mock_read_presence, runner, config_file):
+        """Ambiguous shorthand produces TARGET_AMBIGUOUS error."""
+        from hive_daemon.presence import PresenceCache, PresenceRecord
+
+        cache = PresenceCache()
+        cache.update(PresenceRecord(
+            gw="pg1", agent="main", session="sess-1",
+            updated_ts=1000, ttl_sec=300,
+        ))
+        cache.update(PresenceRecord(
+            gw="pg1", agent="alt", session="sess-1",
+            updated_ts=1000, ttl_sec=300,
+        ))
+        mock_read_presence.return_value = cache
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "send",
+            "--to-session", "pg1/sess-1",
+            "--ch", "command",
+            "--text", "hello",
+        ])
+
+        assert result.exit_code != 0
+        assert "TARGET_AMBIGUOUS" in result.output
+
+    def test_to_session_and_to_mutual_exclusion(self, runner, config_file):
+        """Cannot use both --to and --to-session."""
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "send",
+            "--to", "pg1",
+            "--to-session", "pg1/main/sess-1",
+            "--ch", "command",
+            "--text", "hello",
+        ])
+
+        assert result.exit_code != 0
+        assert "Cannot use both" in result.output
+
+    def test_neither_to_nor_to_session(self, runner, config_file):
+        """Must provide at least one of --to or --to-session."""
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "send",
+            "--ch", "command",
+            "--text", "hello",
+        ])
+
+        assert result.exit_code != 0
+        assert "required" in result.output.lower() or "Either" in result.output

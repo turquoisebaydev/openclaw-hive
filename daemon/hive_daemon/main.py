@@ -20,6 +20,12 @@ from hive_daemon.dispatcher import Dispatcher
 from hive_daemon.envelope import Envelope, EnvelopeError
 from hive_daemon.heartbeat import HeartbeatManager
 from hive_daemon.oc_bridge import OcBridge
+from hive_daemon.presence import (
+    PresenceCache,
+    PresenceRecord,
+    build_local_presence_records,
+    presence_mqtt_topic,
+)
 from hive_daemon.router import Router
 
 log = logging.getLogger("hive_daemon")
@@ -99,6 +105,8 @@ def _build_topics(config: HiveConfig) -> list[str]:
     topics = [f"{prefix}/{name}/+" for name in sorted(names)]
     topics.append(f"{prefix}/all/+")               # cluster-wide broadcasts
     topics.append(f"{prefix}/+/command")            # all outbound commands (for correlation tracking)
+    if config.presence.enabled:
+        topics.append(f"{prefix}/presence/#")       # session presence records
     return topics
 
 
@@ -140,9 +148,33 @@ async def _handle_message(
     corr_store: CorrelationStore | None = None,
     seen_ids: set[str] | None = None,
     announcer: Announcer | None = None,
+    presence_cache: PresenceCache | None = None,
 ) -> None:
     """Parse an MQTT message into an Envelope and route it."""
     topic = str(msg.topic)
+
+    # Presence messages use a different topic structure and are not envelopes.
+    presence_prefix = f"{config.topic_prefix}/presence/"
+    if topic.startswith(presence_prefix) and presence_cache is not None:
+        try:
+            data = json.loads(msg.payload)
+        except (json.JSONDecodeError, TypeError) as exc:
+            log.warning("invalid JSON on presence topic %s: %s", topic, exc)
+            return
+        try:
+            record = PresenceRecord.from_dict(data)
+        except (ValueError, KeyError, TypeError) as exc:
+            log.warning("invalid presence record on %s: %s", topic, exc)
+            return
+        # Skip our own presence records
+        own_names = {config.node_id} | config.instance_names
+        if record.gw not in own_names or not config.presence.discovery.accept_remote:
+            if config.presence.discovery.accept_remote:
+                presence_cache.update(record)
+        else:
+            log.debug("ignoring own presence record from %s", record.gw)
+        return
+
     try:
         payload = json.loads(msg.payload)
     except (json.JSONDecodeError, TypeError) as exc:
@@ -392,6 +424,9 @@ async def run_daemon(config: HiveConfig) -> None:
     # Optional announcements (Discord, etc.)
     announcer = Announcer(config.announcements, node_id=config.node_id)
 
+    # Session presence cache (deterministic — no LLM)
+    presence_cache = PresenceCache() if config.presence.enabled else None
+
     while not shutdown.is_set():
         try:
             async with aiomqtt.Client(
@@ -442,6 +477,30 @@ async def run_daemon(config: HiveConfig) -> None:
 
                 heartbeat_mgr.start()
 
+                # Presence publisher loop (deterministic, no LLM)
+                presence_task: asyncio.Task | None = None
+                if config.presence.enabled and presence_cache is not None:
+                    async def _presence_publish_loop() -> None:
+                        while True:
+                            try:
+                                records = build_local_presence_records(config)
+                                for rec in records:
+                                    topic = presence_mqtt_topic(config.topic_prefix, rec)
+                                    payload = json.dumps(rec.to_dict())
+                                    await client.publish(
+                                        topic, payload,
+                                        retain=config.presence.retain,
+                                    )
+                                    log.debug("published presence to %s", topic)
+                                # Prune stale remote entries
+                                if config.presence.discovery.prune_stale:
+                                    presence_cache.prune()
+                            except aiomqtt.MqttError as exc:
+                                log.error("presence publish failed: %s", exc)
+                            await asyncio.sleep(config.presence.interval_sec)
+
+                    presence_task = asyncio.create_task(_presence_publish_loop())
+
                 try:
                     for topic in topics:
                         await client.subscribe(topic)
@@ -451,8 +510,14 @@ async def run_daemon(config: HiveConfig) -> None:
                     async for msg in client.messages:
                         if shutdown.is_set():
                             break
-                        await _handle_message(msg, config, router, corr_store, seen_ids, announcer)
+                        await _handle_message(msg, config, router, corr_store, seen_ids, announcer, presence_cache)
                 finally:
+                    if presence_task is not None:
+                        presence_task.cancel()
+                        try:
+                            await presence_task
+                        except asyncio.CancelledError:
+                            pass
                     await heartbeat_mgr.stop()
 
         except aiomqtt.MqttError as exc:

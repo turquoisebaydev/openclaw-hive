@@ -10,6 +10,8 @@ from hive_daemon.config import (
     HiveConfig,
     MqttConfig,
     OcInstance,
+    PresenceConfig,
+    PresenceDiscoveryConfig,
     ThreadingConfig,
     load_config,
 )
@@ -115,6 +117,38 @@ enabled = true
 
 [announcements.discord.threading]
 enabled = true
+"""
+
+PRESENCE_FULL_TOML = """\
+[node]
+id = "turq"
+
+[presence]
+enabled = true
+interval_sec = 15
+ttl_sec = 120
+retain = false
+publish_task_details = false
+
+[presence.discovery]
+accept_remote = false
+prune_stale = false
+"""
+
+PRESENCE_PARTIAL_TOML = """\
+[node]
+id = "turq"
+
+[presence]
+enabled = false
+"""
+
+PRESENCE_DISABLED_TOML = """\
+[node]
+id = "turq"
+
+[presence]
+enabled = false
 """
 
 
@@ -273,3 +307,53 @@ class TestOcInstanceOpenclawCmd:
         path = "/Users/turquoise/opt/openclaw-mini1/current/bin/openclaw"
         inst = OcInstance(name="mini1", openclaw_cmd=path)
         assert inst.resolved_openclaw_cmd == path
+
+
+class TestPresenceConfig:
+    """Tests for presence config parsing."""
+
+    def test_defaults_when_missing(self, tmp_path: Path):
+        """No presence section → all defaults (enabled by default)."""
+        f = tmp_path / "hive.toml"
+        f.write_text(MINIMAL_TOML)
+        cfg = load_config(f)
+        p = cfg.presence
+        assert p.enabled is True
+        assert p.interval_sec == 30
+        assert p.ttl_sec == 300
+        assert p.retain is True
+        assert p.publish_task_details is True
+        assert p.discovery.accept_remote is True
+        assert p.discovery.prune_stale is True
+
+    def test_full(self, tmp_path: Path):
+        """Explicit presence config is parsed correctly."""
+        f = tmp_path / "hive.toml"
+        f.write_text(PRESENCE_FULL_TOML)
+        cfg = load_config(f)
+        p = cfg.presence
+        assert p.enabled is True
+        assert p.interval_sec == 15
+        assert p.ttl_sec == 120
+        assert p.retain is False
+        assert p.publish_task_details is False
+        assert p.discovery.accept_remote is False
+        assert p.discovery.prune_stale is False
+
+    def test_partial_defaults(self, tmp_path: Path):
+        """Partial presence section → missing fields use defaults."""
+        f = tmp_path / "hive.toml"
+        f.write_text(PRESENCE_PARTIAL_TOML)
+        cfg = load_config(f)
+        p = cfg.presence
+        assert p.enabled is False
+        assert p.interval_sec == 30
+        assert p.ttl_sec == 300
+        assert p.discovery.accept_remote is True
+
+    def test_disabled(self, tmp_path: Path):
+        """Presence can be explicitly disabled."""
+        f = tmp_path / "hive.toml"
+        f.write_text(PRESENCE_DISABLED_TOML)
+        cfg = load_config(f)
+        assert cfg.presence.enabled is False
