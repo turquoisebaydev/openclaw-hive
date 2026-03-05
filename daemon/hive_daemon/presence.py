@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from hive_daemon.config import HiveConfig, PresenceConfig
@@ -32,6 +34,7 @@ class TaskSummary:
     """Lightweight, sanitised task metadata."""
 
     summary: str = ""
+    activity: str = ""
     cmdline: str = ""
     cwd: str = ""
     url: str = ""
@@ -40,6 +43,8 @@ class TaskSummary:
         d: dict[str, str] = {}
         if self.summary:
             d["summary"] = self.summary[:200]
+        if self.activity:
+            d["activity"] = self.activity[:200]
         if self.cmdline:
             d["cmdline"] = self.cmdline[:200]
         if self.cwd:
@@ -52,6 +57,7 @@ class TaskSummary:
     def from_dict(cls, data: dict[str, Any]) -> TaskSummary:
         return cls(
             summary=str(data.get("summary", ""))[:200],
+            activity=str(data.get("activity", ""))[:200],
             cmdline=str(data.get("cmdline", ""))[:200],
             cwd=str(data.get("cwd", ""))[:200],
             url=str(data.get("url", ""))[:500],
@@ -67,6 +73,10 @@ class PresenceRecord:
     session: str
     state: str = "active"
     status: str = "idle"
+    model: str = "unknown"
+    thinking: str = "unknown"
+    context_tokens: int | None = None
+    context_window: int | None = None
     task: TaskSummary = field(default_factory=TaskSummary)
     updated_ts: int = 0
     ttl_sec: int = 300
@@ -85,6 +95,12 @@ class PresenceRecord:
             "session": self.session,
             "state": self.state,
             "status": self.status,
+            "model": self.model,
+            "thinking": self.thinking,
+            "context": {
+                "tokens": self.context_tokens if self.context_tokens is not None else "unknown",
+                "window": self.context_window if self.context_window is not None else "unknown",
+            },
             "updatedTs": self.updated_ts or int(time.time()),
             "ttlSec": self.ttl_sec,
         }
@@ -100,12 +116,19 @@ class PresenceRecord:
             raise ValueError(f"unexpected kind: {data.get('kind')}")
         task_raw = data.get("task")
         task = TaskSummary.from_dict(task_raw) if isinstance(task_raw, dict) else TaskSummary()
+        ctx = data.get("context") if isinstance(data.get("context"), dict) else {}
+        ctx_tokens = ctx.get("tokens") if isinstance(ctx, dict) else None
+        ctx_window = ctx.get("window") if isinstance(ctx, dict) else None
         return cls(
             gw=str(data.get("gw", "")),
             agent=str(data.get("agent", "")),
             session=str(data.get("session", "")),
             state=str(data.get("state", "active")),
             status=str(data.get("status", "idle")),
+            model=str(data.get("model", "unknown")),
+            thinking=str(data.get("thinking", "unknown")),
+            context_tokens=int(ctx_tokens) if isinstance(ctx_tokens, (int, float)) else None,
+            context_window=int(ctx_window) if isinstance(ctx_window, (int, float)) else None,
             task=task,
             updated_ts=int(data.get("updatedTs", 0)),
             ttl_sec=int(data.get("ttlSec", 300)),
@@ -314,6 +337,171 @@ def resolve_session_target(
 
 
 # ---------------------------------------------------------------------------
+# Local session enumeration (deterministic filesystem reads)
+# ---------------------------------------------------------------------------
+
+def _state_dir_for_profile(profile: str | None) -> Path:
+    """OpenClaw state directory for a given profile."""
+    home = Path.home()
+    return home / (f".openclaw-{profile}" if profile else ".openclaw")
+
+
+def _read_last_jsonl_entry(path: Path, max_bytes: int = 32768) -> dict[str, Any] | None:
+    """Best-effort: read last valid JSON object from a .jsonl file."""
+    try:
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes), os.SEEK_SET)
+            data = f.read()
+        for line in reversed(data.decode(errors="replace").splitlines()):
+            line = line.strip()
+            if line.startswith("{"):
+                try:
+                    return json.loads(line)
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return None
+
+
+def _extract_session_meta(
+    entry: dict[str, Any],
+    index_meta: dict[str, Any],
+) -> dict[str, Any]:
+    """Extract model/thinking/context from a jsonl entry + index metadata."""
+    model = "unknown"
+    thinking = "unknown"
+    context_tokens: int | None = None
+    context_window: int | None = None
+
+    for src in (entry, index_meta):
+        m = src.get("model")
+        if isinstance(m, str) and m:
+            model = m
+            break
+
+    t = entry.get("thinking")
+    if isinstance(t, str) and t:
+        thinking = t
+    elif isinstance(t, dict):
+        thinking = str(t.get("type", "unknown"))
+
+    usage = entry.get("usage") or {}
+    if isinstance(usage, dict):
+        for key in ("inputTokens", "input_tokens", "totalTokens", "total_tokens"):
+            val = usage.get(key)
+            if isinstance(val, (int, float)):
+                context_tokens = int(val)
+                break
+
+    for key in ("contextWindow", "context_window", "maxTokens", "max_tokens"):
+        val = entry.get(key)
+        if isinstance(val, (int, float)):
+            context_window = int(val)
+            break
+
+    return {
+        "model": model,
+        "thinking": thinking,
+        "context_tokens": context_tokens,
+        "context_window": context_window,
+    }
+
+
+def _enumerate_active_sessions(
+    state_dir: Path,
+    active_window_s: int = 300,
+) -> list[dict[str, Any]]:
+    """Enumerate active sessions from local OC state directory.
+
+    Reads sessions.json index files and best-effort session .jsonl files
+    to collect per-session metadata.  All operations are deterministic
+    (filesystem reads only, no LLM).
+    """
+    now_ms = int(time.time() * 1000)
+    cutoff_ms = now_ms - (active_window_s * 1000)
+
+    agents_dir = state_dir / "agents"
+    if not agents_dir.is_dir():
+        return []
+
+    results: list[dict[str, Any]] = []
+
+    try:
+        agent_dirs = [d for d in agents_dir.iterdir() if d.is_dir()]
+    except OSError:
+        return []
+
+    for agent_dir in agent_dirs:
+        agent_name = agent_dir.name
+        sessions_dir = agent_dir / "sessions"
+        sessions_index = sessions_dir / "sessions.json"
+        if not sessions_index.exists():
+            continue
+        try:
+            idx = json.loads(sessions_index.read_text())
+        except Exception:
+            continue
+        if not isinstance(idx, dict):
+            continue
+
+        for skey, meta in idx.items():
+            if not isinstance(meta, dict):
+                continue
+            updated = meta.get("updatedAt")
+            if not isinstance(updated, (int, float)):
+                continue
+            if updated < cutoff_ms:
+                continue
+
+            # Best-effort: read session jsonl for model/context info
+            jsonl_entry: dict[str, Any] = {}
+            jsonl_path = sessions_dir / f"{skey}.jsonl"
+            if jsonl_path.exists():
+                entry = _read_last_jsonl_entry(jsonl_path)
+                if entry:
+                    jsonl_entry = entry
+
+            extracted = _extract_session_meta(jsonl_entry, meta)
+
+            summary = ""
+            for src in (meta, jsonl_entry):
+                t = src.get("title")
+                if isinstance(t, str) and t.strip():
+                    summary = t.strip()[:200]
+                    break
+
+            activity = ""
+            if jsonl_entry:
+                sr = jsonl_entry.get("stopReason")
+                if isinstance(sr, str) and sr:
+                    activity = sr
+
+            cwd = str(jsonl_entry.get("cwd", ""))[:200] if jsonl_entry else ""
+            cmdline = str(jsonl_entry.get("cmdline", ""))[:200] if jsonl_entry else ""
+            url = str(jsonl_entry.get("url", ""))[:500] if jsonl_entry else ""
+
+            results.append({
+                "agent": agent_name,
+                "session": skey,
+                "updated_at_ms": int(updated),
+                "model": extracted["model"],
+                "thinking": extracted["thinking"],
+                "context_tokens": extracted["context_tokens"],
+                "context_window": extracted["context_window"],
+                "summary": summary,
+                "activity": activity,
+                "cmdline": cmdline,
+                "cwd": cwd,
+                "url": url,
+            })
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Presence publisher (builds records for local sessions)
 # ---------------------------------------------------------------------------
 
@@ -322,24 +510,54 @@ def build_local_presence_records(
 ) -> list[PresenceRecord]:
     """Build presence records for all locally managed OC instances.
 
-    This is deterministic — reads only from config, no LLM.
+    Enumerates actual active sessions from local OC state directories and
+    emits one PresenceRecord per session.  Falls back to a single synthetic
+    record per instance when no active sessions are found.
+
+    This is deterministic — reads only from config and local files, no LLM.
     """
     records: list[PresenceRecord] = []
     ttl = config.presence.ttl_sec
 
     for inst in config.oc_instances:
-        # Each OC instance gets a presence record with its daily session id
-        from hive_daemon.oc_bridge import OcBridge
-        session_id = OcBridge._session_id_for_instance(inst)
-        records.append(PresenceRecord(
-            gw=inst.name,
-            agent=inst.agent_id or "main",
-            session=session_id,
-            state="active",
-            status="idle",
-            updated_ts=int(time.time()),
-            ttl_sec=ttl,
-        ))
+        state_dir = _state_dir_for_profile(inst.profile)
+        active_sessions = _enumerate_active_sessions(state_dir, active_window_s=ttl)
+
+        if active_sessions:
+            for sess in active_sessions:
+                records.append(PresenceRecord(
+                    gw=inst.name,
+                    agent=sess["agent"],
+                    session=sess["session"],
+                    state="active",
+                    status="idle",
+                    model=sess["model"],
+                    thinking=sess["thinking"],
+                    context_tokens=sess["context_tokens"],
+                    context_window=sess["context_window"],
+                    task=TaskSummary(
+                        summary=sess["summary"],
+                        activity=sess["activity"],
+                        cmdline=sess["cmdline"],
+                        cwd=sess["cwd"],
+                        url=sess["url"],
+                    ),
+                    updated_ts=int(time.time()),
+                    ttl_sec=ttl,
+                ))
+        else:
+            # Fallback: synthetic record (backwards compat)
+            from hive_daemon.oc_bridge import OcBridge
+            session_id = OcBridge._session_id_for_instance(inst)
+            records.append(PresenceRecord(
+                gw=inst.name,
+                agent=inst.agent_id or "main",
+                session=session_id,
+                state="active",
+                status="idle",
+                updated_ts=int(time.time()),
+                ttl_sec=ttl,
+            ))
 
     if not config.oc_instances:
         # Standalone daemon — publish a single node-level record
