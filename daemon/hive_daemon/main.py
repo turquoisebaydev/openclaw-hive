@@ -359,24 +359,22 @@ def setup_router(
     else:
         router.register("heartbeat", _log_handler)
 
-    # --- response channel -> enrich with original context, inject to OC ---
-    if oc_bridge is not None:
-        async def _response_handler(envelope: Envelope, target: str) -> None:
-            instance = _resolve_instance(target)
-            original = corr_store.match(envelope) if corr_store else None
-            if original is not None:
-                prefix = f're: "{original.text[:200]}"'
-                log.info(
-                    "routing response %s to OC bridge (corr=%s, enriched, instance=%s)",
-                    envelope.id, envelope.corr, instance,
-                )
-                await oc_bridge.inject_envelope(envelope, prefix=prefix, instance_name=instance)
-            else:
-                log.info("routing response %s to OC bridge (no original context, instance=%s)", envelope.id, instance)
-                await oc_bridge.inject_envelope(envelope, instance_name=instance)
-        router.register("response", _response_handler)
-    else:
-        router.register("response", _log_handler)
+    # --- response channel -> deterministic consume/log only ---
+    #
+    # IMPORTANT: do not inject generic response traffic back into OC by default.
+    # Injecting responses can cause cross-gateway reply loops (response -> OC ->
+    # generated reply -> response ...). Keep responses on deterministic paths
+    # (`hive-cli --wait`, reply/session mappings, logs/announcements).
+    async def _response_handler(envelope: Envelope, target: str) -> None:
+        original = corr_store.match(envelope) if corr_store else None
+        if original is not None:
+            log.info(
+                "consumed response %s deterministically (corr=%s, matched original)",
+                envelope.id, envelope.corr,
+            )
+        else:
+            log.info("consumed response %s deterministically (no original context)", envelope.id)
+    router.register("response", _response_handler)
 
     # --- status -> log only (inject to OC if urgency=now) ---
     if oc_bridge is not None:
