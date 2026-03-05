@@ -717,6 +717,32 @@ class TestEnumerateActiveSessions:
         assert results[0]["context_tokens"] is None
         assert results[0]["context_window"] is None
 
+
+    def test_uses_session_file_path_from_index(self, tmp_path):
+        now_ms = int(time.time() * 1000)
+        sessions_dir = tmp_path / "agents" / "dev" / "sessions"
+        sessions_dir.mkdir(parents=True)
+        actual = sessions_dir / "abc-uuid.jsonl"
+        actual.write_text(json.dumps({
+            "message": {
+                "role": "assistant",
+                "model": "gpt-5.3-codex",
+                "content": [{"type": "thinking", "thinking": "Generating response"}],
+                "stopReason": "toolUse",
+            }
+        }) + "\n")
+        (sessions_dir / "sessions.json").write_text(json.dumps({
+            "agent:dev:discord:channel:123": {
+                "updatedAt": now_ms,
+                "sessionFile": str(actual),
+                "model": "gpt-5.3-codex",
+            }
+        }))
+        results = _enumerate_active_sessions(tmp_path, active_window_s=300)
+        assert len(results) == 1
+        assert results[0]["summary"] != ""
+        assert results[0]["model"] == "gpt-5.3-codex"
+
     def test_multiple_agents(self, tmp_path):
         """Sessions from different agents are all enumerated."""
         now_ms = int(time.time() * 1000)

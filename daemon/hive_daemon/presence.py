@@ -512,9 +512,17 @@ def _enumerate_active_sessions(
             if updated < cutoff_ms:
                 continue
 
-            # Best-effort: read session jsonl for model/context info
+            # Best-effort: read session jsonl for model/context/activity info.
+            # Prefer explicit sessionFile from sessions.json (actual file name is
+            # often UUID-based), then fallback to <session-key>.jsonl.
             jsonl_entry: dict[str, Any] = {}
-            jsonl_path = sessions_dir / f"{skey}.jsonl"
+            jsonl_path: Path | None = None
+            session_file = meta.get("sessionFile")
+            if isinstance(session_file, str) and session_file.strip():
+                candidate = Path(session_file)
+                jsonl_path = candidate if candidate.is_absolute() else (sessions_dir / candidate)
+            if jsonl_path is None:
+                jsonl_path = sessions_dir / f"{skey}.jsonl"
             if jsonl_path.exists():
                 entry = _read_last_jsonl_entry(jsonl_path)
                 if entry:
