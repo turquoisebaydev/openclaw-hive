@@ -351,6 +351,33 @@ def resolve_session_target(
 # ---------------------------------------------------------------------------
 
 
+def _agent_ids_for_profile(profile: str | None) -> list[str]:
+    """Best-effort list of configured agent ids for a profile.
+
+    Reads OpenClaw config and returns agents.list ids; falls back to ["main"].
+    """
+    from hive_daemon.probe import _config_path_for_profile
+    cfg_path = _config_path_for_profile(profile)
+    try:
+        import json
+        data = json.loads(cfg_path.read_text())
+        agents = (data.get("agents") or {}).get("list")
+        if isinstance(agents, list):
+            ids = [str(a.get("id")) for a in agents if isinstance(a, dict) and a.get("id")]
+            ids = [a for a in ids if a]
+            if ids:
+                # keep stable order, de-dup
+                out: list[str] = []
+                for a in ids:
+                    if a not in out:
+                        out.append(a)
+                return out
+    except Exception:
+        pass
+    return ["main"]
+
+
+
 def _parse_channel_from_session_key(session_key: str) -> tuple[str, str, str]:
     """Best-effort parse of provider/chat details from session key."""
     # Common shapes:
@@ -372,25 +399,41 @@ async def _list_sessions_via_api(
 ) -> tuple[bool, list[dict[str, Any]], str]:
     """List active sessions via OpenClaw runtime API.
 
-    Calls ``openclaw sessions --json`` for the given instance.
+    Enumerates all configured agent ids for the profile and aggregates
+    ``openclaw sessions --agent <id> --json`` results.
     Returns: (ok, sessions_list, error_string).
     """
-    ok, data, err = await _run_openclaw_json(
-        openclaw_cmd=inst.resolved_openclaw_cmd,
-        profile=inst.profile,
-        args=["sessions", "--json"],
-        timeout_s=timeout_s,
-    )
-    if not ok:
-        return False, [], err
-    if not isinstance(data, (dict, list)):
-        return False, [], "unexpected response format"
+    agent_ids = [inst.agent_id] if inst.agent_id else _agent_ids_for_profile(inst.profile)
+    aggregated: list[dict[str, Any]] = []
 
-    sessions = data if isinstance(data, list) else data.get("sessions", [])
-    if not isinstance(sessions, list):
-        return False, [], "sessions field is not a list"
+    for agent_id in agent_ids:
+        ok, data, err = await _run_openclaw_json(
+            openclaw_cmd=inst.resolved_openclaw_cmd,
+            profile=inst.profile,
+            args=["sessions", "--agent", str(agent_id), "--json"],
+            timeout_s=timeout_s,
+        )
+        if not ok:
+            return False, [], err
+        if not isinstance(data, (dict, list)):
+            return False, [], "unexpected response format"
 
-    return True, sessions, ""
+        sessions = data if isinstance(data, list) else data.get("sessions", [])
+        if not isinstance(sessions, list):
+            return False, [], "sessions field is not a list"
+        for s in sessions:
+            if isinstance(s, dict):
+                aggregated.append(s)
+
+    # de-dup by key/session ids when same session appears via multiple views
+    dedup: dict[str, dict[str, Any]] = {}
+    for s in aggregated:
+        k = str(s.get("key") or s.get("sessionKey") or s.get("sessionId") or s.get("session_id") or s.get("id") or "")
+        if not k:
+            continue
+        dedup[k] = s
+
+    return True, list(dedup.values()), ""
 
 
 def _parse_api_session(raw: dict[str, Any]) -> dict[str, Any]:
