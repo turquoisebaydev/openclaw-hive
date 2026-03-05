@@ -344,13 +344,13 @@ async def _list_sessions_via_api(
 ) -> tuple[bool, list[dict[str, Any]], str]:
     """List active sessions via OpenClaw runtime API.
 
-    Calls ``openclaw sessions list --json`` for the given instance.
+    Calls ``openclaw sessions --json`` for the given instance.
     Returns: (ok, sessions_list, error_string).
     """
     ok, data, err = await _run_openclaw_json(
         openclaw_cmd=inst.resolved_openclaw_cmd,
         profile=inst.profile,
-        args=["sessions", "list", "--json"],
+        args=["sessions", "--json"],
         timeout_s=timeout_s,
     )
     if not ok:
@@ -427,7 +427,7 @@ async def build_local_presence_records(
 ) -> list[PresenceRecord]:
     """Build presence records for all locally managed OC instances.
 
-    Calls the OpenClaw runtime API (``openclaw sessions list --json``) to
+    Calls the OpenClaw runtime API (``openclaw sessions --json``) to
     enumerate active sessions and emits one PresenceRecord per session.
 
     When the API is unavailable, emits an explicit error record with

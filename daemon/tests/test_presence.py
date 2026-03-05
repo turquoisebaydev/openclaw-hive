@@ -609,7 +609,7 @@ class TestListSessionsViaApi:
         mock_run.assert_called_once_with(
             openclaw_cmd="/opt/oc/bin/openclaw",
             profile="turq",
-            args=["sessions", "list", "--json"],
+            args=["sessions", "--json"],
             timeout_s=10.0,
         )
 
