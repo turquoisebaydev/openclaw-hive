@@ -5,6 +5,9 @@ When threading is enabled, groups correlated events into Discord threads
 using the Discord bot API, falling back to channel-level webhook posts
 on failure.
 
+Thread message bodies contain **message text only** — full metadata is
+written to the local audit log.
+
 All publish failures are non-fatal — logged as warnings, never breaking
 the core send/receive flow.
 """
@@ -17,8 +20,8 @@ import logging
 import urllib.request
 import urllib.error
 from functools import partial
-from pathlib import Path
 
+from hive_daemon.announcement_audit import AuditLogger
 from hive_daemon.config import AnnouncementsConfig
 from hive_daemon.envelope import Envelope
 from hive_daemon.thread_map import ThreadMap, ThreadEntry, resolve_thread_key
@@ -88,6 +91,22 @@ def _format_thread_parent(envelope: Envelope) -> str:
     return " | ".join(parts)
 
 
+# Maximum text length for thread message bodies.
+_MAX_THREAD_TEXT_LEN = 2000
+
+
+def _thread_message_body(envelope: Envelope) -> str:
+    """Return the text-only body for a thread message.
+
+    Per spec, thread messages contain envelope.text only — no metadata.
+    Applies deterministic truncation for very large payloads.
+    """
+    text = envelope.text
+    if len(text) <= _MAX_THREAD_TEXT_LEN:
+        return text
+    return text[: _MAX_THREAD_TEXT_LEN - 1] + "…"
+
+
 class Announcer:
     """Publishes hive event announcements to Discord.
 
@@ -98,12 +117,14 @@ class Announcer:
     Discord threads via the bot API.  Thread mappings are persisted
     on disk so they survive daemon restarts.
 
+    Thread message bodies contain message text only; full metadata is
+    written to the audit log.
+
     Args:
         config: The announcements configuration block.
         node_id: Local gateway identifier for gw= field.
-        bot_token: Discord bot token for thread operations (optional).
-        channel_id: Discord channel snowflake ID for thread operations (optional).
         thread_map: Override the ThreadMap instance (mainly for testing).
+        audit_logger: Override the AuditLogger instance (mainly for testing).
     """
 
     def __init__(
@@ -111,15 +132,14 @@ class Announcer:
         config: AnnouncementsConfig,
         *,
         node_id: str | None = None,
-        bot_token: str | None = None,
-        channel_id: str | None = None,
         thread_map: ThreadMap | None = None,
+        audit_logger: AuditLogger | None = None,
     ) -> None:
         self._config = config
         self._discord = config.discord
         self._node_id = node_id
-        self._bot_token = bot_token
-        self._channel_id = channel_id
+        self._bot_token = config.discord.bot_token
+        self._channel_id = config.discord.channel_id
         self._threading = config.discord.threading
 
         if self._threading.enabled and thread_map is not None:
@@ -131,6 +151,11 @@ class Announcer:
             )
         else:
             self._thread_map = None
+
+        if audit_logger is not None:
+            self._audit = audit_logger
+        else:
+            self._audit = AuditLogger(config.audit, node_id=node_id)
 
     @property
     def send_enabled(self) -> bool:
@@ -166,7 +191,7 @@ class Announcer:
         if envelope.ch == "heartbeat":
             return
         text = format_send(envelope, gw=self._node_id)
-        await self._publish(text, envelope)
+        await self._publish(text, envelope, event="send")
 
     async def announce_recv(self, envelope: Envelope) -> None:
         """Announce an inbound receive event. Non-fatal on failure."""
@@ -175,21 +200,25 @@ class Announcer:
         if envelope.ch == "heartbeat":
             return
         text = format_recv(envelope, gw=self._node_id)
-        await self._publish(text, envelope)
+        await self._publish(text, envelope, event="recv")
 
-    async def _publish(self, text: str, envelope: Envelope) -> None:
+    async def _publish(self, text: str, envelope: Envelope, *, event: str) -> None:
         """Route to threaded or channel-level posting."""
         if self.threading_enabled:
-            await self._publish_threaded(text, envelope)
+            await self._publish_threaded(text, envelope, event=event)
         else:
             await self._publish_discord(text)
+            self._audit.record(envelope, event=event)
 
     # -- Threaded posting (Discord bot API) --
 
-    async def _publish_threaded(self, text: str, envelope: Envelope) -> None:
+    async def _publish_threaded(self, text: str, envelope: Envelope, *, event: str) -> None:
         """Post into a correlated Discord thread. Falls back on failure."""
         thread_key = resolve_thread_key(envelope.corr, envelope.id)
         assert self._thread_map is not None
+
+        # Thread message body is text-only per spec.
+        body = _thread_message_body(envelope)
 
         try:
             loop = asyncio.get_running_loop()
@@ -200,9 +229,10 @@ class Announcer:
                 try:
                     await loop.run_in_executor(
                         None,
-                        partial(self._post_bot_message, entry.thread_id, text),
+                        partial(self._post_bot_message, entry.thread_id, body),
                     )
                     log.debug("threaded announcement posted to thread=%s", entry.thread_id)
+                    self._audit.record(envelope, event=event, thread_id=entry.thread_id)
                     return
                 except Exception:
                     # Thread may be archived/deleted — remove and recreate below
@@ -225,15 +255,17 @@ class Announcer:
                 thread_id=thread_id,
                 parent_message_id=parent_id,
             )
-            # Post the actual event message into the new thread
+            # Post the actual event message into the new thread (text-only body)
             await loop.run_in_executor(
                 None,
-                partial(self._post_bot_message, thread_id, text),
+                partial(self._post_bot_message, thread_id, body),
             )
             log.debug("threaded announcement: created thread=%s for key=%s", thread_id, thread_key)
+            self._audit.record(envelope, event=event, thread_id=thread_id)
 
         except Exception as exc:
             log.warning("threaded discord announcement failed: %s", exc)
+            self._audit.record(envelope, event=event, status="error", error=str(exc))
             if self._threading.fallback_to_channel:
                 await self._publish_discord(text)
 

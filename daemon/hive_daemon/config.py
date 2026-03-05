@@ -85,10 +85,20 @@ class DiscordAnnouncementConfig:
 
     enabled: bool = False
     channel: str = "hive-announcements"
+    channel_id: str | None = None
+    bot_token: str | None = None
     webhook_url: str | None = None
     publish_send: bool = True
     publish_receive: bool = True
     threading: ThreadingConfig = field(default_factory=ThreadingConfig)
+
+
+@dataclass(frozen=True, slots=True)
+class AuditConfig:
+    """Local audit log settings for announcements."""
+
+    enabled: bool = True
+    path: str = "~/.local/state/hive/hive-announcements.log"
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +107,7 @@ class AnnouncementsConfig:
 
     enabled: bool = False
     discord: DiscordAnnouncementConfig = field(default_factory=DiscordAnnouncementConfig)
+    audit: AuditConfig = field(default_factory=AuditConfig)
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,14 +203,22 @@ def load_config(path: Path) -> HiveConfig:
     discord_ann = DiscordAnnouncementConfig(
         enabled=discord_section.get("enabled", False),
         channel=discord_section.get("channel", "hive-announcements"),
+        channel_id=discord_section.get("channel_id"),
+        bot_token=discord_section.get("bot_token"),
         webhook_url=discord_section.get("webhook_url"),
         publish_send=discord_section.get("publish_send", True),
         publish_receive=discord_section.get("publish_receive", True),
         threading=threading_cfg,
     )
+    audit_section = ann_section.get("audit", {})
+    audit_cfg = AuditConfig(
+        enabled=audit_section.get("enabled", True),
+        path=audit_section.get("path", "~/.local/state/hive/hive-announcements.log"),
+    )
     announcements = AnnouncementsConfig(
         enabled=ann_section.get("enabled", False),
         discord=discord_ann,
+        audit=audit_cfg,
     )
 
     return HiveConfig(

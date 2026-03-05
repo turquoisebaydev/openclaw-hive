@@ -6,6 +6,7 @@ import pytest
 
 from hive_daemon.config import (
     AnnouncementsConfig,
+    AuditConfig,
     DiscordAnnouncementConfig,
     HiveConfig,
     MqttConfig,
@@ -117,6 +118,52 @@ enabled = true
 
 [announcements.discord.threading]
 enabled = true
+"""
+
+BOT_TOKEN_FULL_TOML = """\
+[node]
+id = "turq"
+
+[announcements]
+enabled = true
+
+[announcements.discord]
+enabled = true
+channel = "hive-announcements"
+channel_id = "1477044417012695040"
+bot_token = "MTIzNDU2Nzg5MDEyMzQ1Njc4OQ.example"
+webhook_url = "https://discord.com/api/webhooks/123/abc"
+
+[announcements.discord.threading]
+enabled = true
+
+[announcements.audit]
+enabled = true
+path = "/var/log/hive/announcements.log"
+"""
+
+BOT_TOKEN_PARTIAL_TOML = """\
+[node]
+id = "turq"
+
+[announcements]
+enabled = true
+
+[announcements.discord]
+enabled = true
+channel_id = "1477044417012695040"
+bot_token = "tok"
+"""
+
+AUDIT_DISABLED_TOML = """\
+[node]
+id = "turq"
+
+[announcements]
+enabled = true
+
+[announcements.audit]
+enabled = false
 """
 
 PRESENCE_FULL_TOML = """\
@@ -357,3 +404,60 @@ class TestPresenceConfig:
         f.write_text(PRESENCE_DISABLED_TOML)
         cfg = load_config(f)
         assert cfg.presence.enabled is False
+
+
+class TestBotTokenConfig:
+    """Tests for bot_token and channel_id config parsing."""
+
+    def test_full(self, tmp_path: Path):
+        f = tmp_path / "hive.toml"
+        f.write_text(BOT_TOKEN_FULL_TOML)
+        cfg = load_config(f)
+        d = cfg.announcements.discord
+        assert d.channel_id == "1477044417012695040"
+        assert d.bot_token == "MTIzNDU2Nzg5MDEyMzQ1Njc4OQ.example"
+        assert d.webhook_url == "https://discord.com/api/webhooks/123/abc"
+        assert d.threading.enabled is True
+
+    def test_partial(self, tmp_path: Path):
+        f = tmp_path / "hive.toml"
+        f.write_text(BOT_TOKEN_PARTIAL_TOML)
+        cfg = load_config(f)
+        d = cfg.announcements.discord
+        assert d.channel_id == "1477044417012695040"
+        assert d.bot_token == "tok"
+        assert d.webhook_url is None
+
+    def test_defaults_when_missing(self, tmp_path: Path):
+        f = tmp_path / "hive.toml"
+        f.write_text(MINIMAL_TOML)
+        cfg = load_config(f)
+        d = cfg.announcements.discord
+        assert d.channel_id is None
+        assert d.bot_token is None
+
+
+class TestAuditConfig:
+    """Tests for audit log config parsing."""
+
+    def test_full(self, tmp_path: Path):
+        f = tmp_path / "hive.toml"
+        f.write_text(BOT_TOKEN_FULL_TOML)
+        cfg = load_config(f)
+        a = cfg.announcements.audit
+        assert a.enabled is True
+        assert a.path == "/var/log/hive/announcements.log"
+
+    def test_defaults_when_missing(self, tmp_path: Path):
+        f = tmp_path / "hive.toml"
+        f.write_text(MINIMAL_TOML)
+        cfg = load_config(f)
+        a = cfg.announcements.audit
+        assert a.enabled is True
+        assert a.path == "~/.local/state/hive/hive-announcements.log"
+
+    def test_disabled(self, tmp_path: Path):
+        f = tmp_path / "hive.toml"
+        f.write_text(AUDIT_DISABLED_TOML)
+        cfg = load_config(f)
+        assert cfg.announcements.audit.enabled is False
