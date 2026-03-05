@@ -17,6 +17,8 @@ from hive_daemon.presence import (
     TaskSummary,
     _enumerate_active_sessions,
     _extract_session_meta,
+    _extract_text_from_content,
+    _derive_status_and_activity,
     _read_last_jsonl_entry,
     build_local_presence_records,
     make_delivery_error,
@@ -583,6 +585,13 @@ class TestExtractSessionMeta:
         )
         assert result["model"] == "claude-sonnet-4-20250514"
 
+    def test_extracts_model_from_nested_message(self):
+        result = _extract_session_meta(
+            {"message": {"model": "gpt-5.3-codex"}},
+            {},
+        )
+        assert result["model"] == "gpt-5.3-codex"
+
     def test_falls_back_to_index_model(self):
         result = _extract_session_meta(
             {},
@@ -620,6 +629,31 @@ class TestExtractSessionMeta:
         assert result["context_window"] == 200000
 
 
+class TestPresenceContentExtraction:
+    def test_extract_text_from_content_list(self):
+        content = [
+            {"type": "thinking", "thinking": "Analyzing"},
+            {"type": "text", "text": "Generating response now"},
+        ]
+        out = _extract_text_from_content(content)
+        assert "Analyzing" in out
+        assert "Generating response now" in out
+
+    def test_derive_status_running_for_assistant_without_stop_reason(self):
+        now_ms = int(time.time() * 1000)
+        entry = {"message": {"role": "assistant", "content": [{"type": "text", "text": "Working"}]}}
+        status, activity = _derive_status_and_activity(entry, now_ms)
+        assert status == "running"
+        assert activity == "generating response"
+
+    def test_derive_status_waiting_for_recent_user(self):
+        now_ms = int(time.time() * 1000)
+        entry = {"message": {"role": "user", "content": [{"type": "text", "text": "please check logs"}]}}
+        status, activity = _derive_status_and_activity(entry, now_ms)
+        assert status == "waiting"
+        assert "awaiting response" in activity
+
+
 class TestEnumerateActiveSessions:
     def test_no_agents_dir(self, tmp_path):
         assert _enumerate_active_sessions(tmp_path) == []
@@ -651,13 +685,14 @@ class TestEnumerateActiveSessions:
             tmp_path,
             sessions={"my-session": {"updatedAt": now_ms}},
             jsonl_files={"my-session": [
-                {"model": "claude-haiku-4-5-20251001", "thinking": "none"},
+                {"message": {"role": "assistant", "model": "claude-haiku-4-5-20251001", "thinking": "none", "content": [{"type":"text","text":"done"}] }},
             ]},
         )
         results = _enumerate_active_sessions(tmp_path, active_window_s=300)
         assert len(results) == 1
         assert results[0]["model"] == "claude-haiku-4-5-20251001"
         assert results[0]["thinking"] == "none"
+        assert results[0]["status"] in {"running", "idle"}
 
     def test_extracts_context_from_jsonl(self, tmp_path):
         now_ms = int(time.time() * 1000)

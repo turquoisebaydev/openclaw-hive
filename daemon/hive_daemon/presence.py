@@ -366,38 +366,94 @@ def _read_last_jsonl_entry(path: Path, max_bytes: int = 32768) -> dict[str, Any]
     return None
 
 
+def _entry_message(entry: dict[str, Any]) -> dict[str, Any]:
+    """Return nested message object when present (jsonl events wrap it)."""
+    msg = entry.get("message")
+    if isinstance(msg, dict):
+        return msg
+    return entry
+
+
+def _extract_text_from_content(content: Any) -> str:
+    """Extract compact text from OpenClaw message content payloads."""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "text":
+                txt = item.get("text")
+                if isinstance(txt, str) and txt.strip():
+                    parts.append(txt.strip())
+            elif item.get("type") == "thinking":
+                t = item.get("thinking")
+                if isinstance(t, str) and t.strip():
+                    parts.append(t.strip())
+        if parts:
+            return " ".join(parts)
+    return ""
+
+
+def _derive_status_and_activity(entry: dict[str, Any], updated_ms: int) -> tuple[str, str]:
+    """Derive deterministic session status/activity from latest event."""
+    now_ms = int(time.time() * 1000)
+    age_ms = max(0, now_ms - updated_ms)
+    msg = _entry_message(entry)
+    role = msg.get("role") if isinstance(msg.get("role"), str) else ""
+    stop_reason = msg.get("stopReason") if isinstance(msg.get("stopReason"), str) else ""
+    tool_name = msg.get("toolName") if isinstance(msg.get("toolName"), str) else ""
+
+    if role == "assistant":
+        if not stop_reason and age_ms <= 30_000:
+            return "running", "generating response"
+        return "idle", (f"completed ({stop_reason})" if stop_reason else "assistant response")
+    if role in {"tool", "toolResult"}:
+        activity = f"tool {tool_name}" if tool_name else "tool execution"
+        return ("running" if age_ms <= 30_000 else "idle", activity)
+    if role == "user":
+        text = _extract_text_from_content(msg.get("content"))
+        if text:
+            return ("waiting" if age_ms <= 120_000 else "idle", f"awaiting response: {text[:120]}")
+        return ("waiting" if age_ms <= 120_000 else "idle", "awaiting response")
+
+    return "idle", ""
+
+
 def _extract_session_meta(
     entry: dict[str, Any],
     index_meta: dict[str, Any],
 ) -> dict[str, Any]:
-    """Extract model/thinking/context from a jsonl entry + index metadata."""
+    """Extract model/thinking/context from latest jsonl event + index metadata."""
     model = "unknown"
     thinking = "unknown"
     context_tokens: int | None = None
     context_window: int | None = None
 
-    for src in (entry, index_meta):
-        m = src.get("model")
+    msg = _entry_message(entry)
+
+    for src in (msg, entry, index_meta):
+        m = src.get("model") if isinstance(src, dict) else None
         if isinstance(m, str) and m:
             model = m
             break
 
-    t = entry.get("thinking")
+    t = msg.get("thinking")
     if isinstance(t, str) and t:
         thinking = t
     elif isinstance(t, dict):
         thinking = str(t.get("type", "unknown"))
 
-    usage = entry.get("usage") or {}
-    if isinstance(usage, dict):
-        for key in ("inputTokens", "input_tokens", "totalTokens", "total_tokens"):
-            val = usage.get(key)
-            if isinstance(val, (int, float)):
-                context_tokens = int(val)
-                break
+    usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else {}
+    for key in ("inputTokens", "input_tokens", "totalTokens", "total_tokens"):
+        val = usage.get(key)
+        if isinstance(val, (int, float)):
+            context_tokens = int(val)
+            break
 
     for key in ("contextWindow", "context_window", "maxTokens", "max_tokens"):
-        val = entry.get(key)
+        val = msg.get(key)
         if isinstance(val, (int, float)):
             context_window = int(val)
             break
@@ -466,27 +522,32 @@ def _enumerate_active_sessions(
 
             extracted = _extract_session_meta(jsonl_entry, meta)
 
+            msg = _entry_message(jsonl_entry)
+
             summary = ""
-            for src in (meta, jsonl_entry):
-                t = src.get("title")
+            for src in (meta, msg, jsonl_entry):
+                t = src.get("title") if isinstance(src, dict) else None
                 if isinstance(t, str) and t.strip():
                     summary = t.strip()[:200]
                     break
+            if not summary:
+                summary = _extract_text_from_content(msg.get("content"))[:200] if msg else ""
 
-            activity = ""
-            if jsonl_entry:
-                sr = jsonl_entry.get("stopReason")
+            status, activity = _derive_status_and_activity(jsonl_entry, int(updated))
+            if not activity and msg:
+                sr = msg.get("stopReason")
                 if isinstance(sr, str) and sr:
                     activity = sr
 
-            cwd = str(jsonl_entry.get("cwd", ""))[:200] if jsonl_entry else ""
-            cmdline = str(jsonl_entry.get("cmdline", ""))[:200] if jsonl_entry else ""
-            url = str(jsonl_entry.get("url", ""))[:500] if jsonl_entry else ""
+            cwd = str(msg.get("cwd", ""))[:200] if msg else ""
+            cmdline = str(msg.get("cmdline", ""))[:200] if msg else ""
+            url = str(msg.get("url", ""))[:500] if msg else ""
 
             results.append({
                 "agent": agent_name,
                 "session": skey,
                 "updated_at_ms": int(updated),
+                "status": status,
                 "model": extracted["model"],
                 "thinking": extracted["thinking"],
                 "context_tokens": extracted["context_tokens"],
@@ -530,7 +591,7 @@ def build_local_presence_records(
                     agent=sess["agent"],
                     session=sess["session"],
                     state="active",
-                    status="idle",
+                    status=sess.get("status", "idle"),
                     model=sess["model"],
                     thinking=sess["thinking"],
                     context_tokens=sess["context_tokens"],
