@@ -1,38 +1,34 @@
-# Feature Spec — Discord Threaded Announcements (Correlation Flows)
+# Feature Spec — Discord Threaded Announcements (Bot API, Corr Threads)
 
 ## Status
-Draft (ready for implementation)
+Draft (implementation-ready)
 
 ## Why
-Current webhook announcements are visible but noisy in-channel. Operators want each request/response flow grouped in one Discord thread so they can follow a single conversation chain.
+Channel-level announcements are noisy. We want correlated Hive conversations (`corr`) grouped into Discord threads, while preserving deterministic/non-fatal daemon behavior.
 
-## Goal
-When Hive events share the same correlation chain (`corr`), post them into one Discord thread under a single parent message.
-
----
-
-## Scope
-1. Threaded delivery for Discord announcements.
-2. Stable thread keying by correlation id.
-3. Local mapping store to reuse thread ids across process restarts.
-4. Non-fatal fallback to normal channel post if thread operations fail.
-
-Out of scope (this round):
-- Migrating historical messages into threads
-- Cross-guild threading
-- Rich embeds/components
-- Provider-agnostic threading abstraction
+## Goals
+1. Use Discord **bot token API** for robust thread create/reuse.
+2. Group messages by `corr` (fallback `id`).
+3. Post **thread message body as message text only** (`envelope.text` preview policy still applies).
+4. Keep rich metadata in a **local daemon audit log** (not in Discord thread text).
+5. Keep announcement failures non-fatal.
 
 ---
 
-## Important Implementation Note
-Discord **webhook-only posting cannot reliably create/reuse normal channel threads** for this use-case.
+## Transport
 
-Therefore this phase should use a **Discord bot/API sender path** (token-based) for thread operations, while keeping existing webhook path as fallback.
+### Primary
+Discord bot API (token-based) for:
+- parent message send
+- thread creation
+- message send into thread
+
+### Fallback
+Webhook/top-level fallback only when configured and bot path fails.
 
 ---
 
-## Proposed Config
+## Config
 
 ```toml
 [announcements]
@@ -40,120 +36,114 @@ enabled = false
 
 [announcements.discord]
 enabled = false
-channel = "hive-announcements"
-webhook_url = "https://discord.com/api/webhooks/..." # existing fallback path
-publish_send = true
+channel = "hive-announcements"        # operator label
+channel_id = "1477044417012695040"   # required for bot API path
+bot_token = "<discord bot token>"     # required for bot API path
+webhook_url = "https://discord.com/api/webhooks/..." # optional fallback
+publish_send = false
 publish_receive = true
 
 [announcements.discord.threading]
-enabled = false
-mode = "by_corr"                # only mode in phase 1
+enabled = true
+mode = "by_corr"
 thread_name_prefix = "hive"
-max_age_hours = 168              # map entry reuse window
-fallback_to_channel = true       # if thread post fails, post top-level
+max_age_hours = 168
+fallback_to_channel = true
+
+[announcements.audit]
+enabled = true
+path = "~/.local/state/hive/hive-announcements.log"
 ```
 
-### Defaults
-- `threading.enabled = false`
-- `mode = "by_corr"`
-- `max_age_hours = 168`
-- `fallback_to_channel = true`
+Defaults:
+- threading disabled by default until explicitly enabled
+- audit enabled by default
+- preserve existing publish_send/publish_receive semantics
 
 ---
 
-## Thread Key / Grouping Rules
-1. `thread_key = envelope.corr` when present
-2. fallback: `thread_key = envelope.id`
+## Thread Grouping Rules
+1. `thread_key = corr` when present
+2. fallback `thread_key = id`
 
-All send/recv events with same `thread_key` should be posted into the same thread.
+All events with same thread_key go to one thread.
 
 ---
 
-## Thread Lifecycle
-1. Resolve existing thread from local map by `(channel, thread_key)`.
-2. If missing/stale/invalid:
-   - create parent summary message in configured channel
-   - create a thread from parent
-   - store mapping
-3. Post event message into thread.
-4. Update `last_seen`.
+## Discord Content Rules
 
-If thread posting fails:
-- log warning
-- if `fallback_to_channel=true`, publish top-level non-thread message
-- never impact core Hive send/recv processing
+### Parent message (thread root)
+Compact summary allowed (single line), e.g.:
+`HIVE FLOW corr=<corr> from=<from> to=<to> action=<action>`
+
+### Thread message body
+**Text only**:
+- send message text (`envelope.text`) only
+- no extra metadata prefix in thread message
+- rely on Discord author/time/thread context for display
+
+If text is very large, apply deterministic truncation policy.
+
+---
+
+## Local Audit Log (per daemon)
+Write one JSONL/text line per announcement event containing full metadata:
+- from/to/ch/action/corr/replyTo/id/gw/ts/status/threadId
+- include publish outcome (ok/failure + error)
+
+Suggested defaults:
+- macOS: `~/Library/Logs/hive-announcements.log`
+- Linux: `~/.local/state/hive/hive-announcements.log`
+
+This log replaces the need for metadata-heavy Discord message bodies.
 
 ---
 
 ## Mapping Store
-Add local JSON map (similar to session map durability):
-
-Suggested file:
+Persist thread mappings:
 - `~/.local/share/hive/announcement_threads.json`
 
-Record shape:
-```json
-{
-  "discord:hive-announcements:corr:ab12...": {
-    "threadId": "...",
-    "parentMessageId": "...",
-    "createdAt": 1772430000,
-    "lastSeenAt": 1772433600
-  }
-}
-```
+Fields:
+- thread_key
+- thread_id
+- parent_message_id
+- created_at
+- last_seen_at
 
-Cleanup:
-- prune entries older than `max_age_hours`
+Prune mappings older than `max_age_hours`.
 
 ---
 
-## Runtime Behavior
-### Parent message format
-Compact opener for thread root:
-
-`HIVE FLOW | corr=... | from=turq | to=pg1 | action=ping`
-
-### Thread message format
-Reuse existing announcement line format (send/recv, metadata, preview text).
-
----
-
-## Safety / Reliability
-- Keep non-fatal policy (announce failures do not block routing/dispatch)
-- Never include secrets/tokens
-- Keep text preview truncation
-- Heartbeat channel remains suppressed from announcements
+## Failure Handling
+- Never block core hive routing/dispatch.
+- On bot send/thread errors:
+  - warn + write audit log
+  - fallback behavior per `fallback_to_channel`
+- If fallback disabled, drop announcement but keep daemon healthy.
 
 ---
 
 ## Acceptance Criteria
-1. New flow creates one thread and posts events inside it.
-2. Matching `corr` events reuse same thread.
-3. Restart daemon -> mapping still works (same thread reused when valid).
-4. Invalid/archived thread remaps by creating a fresh one.
-5. Failure path falls back to channel post when configured.
-6. Existing non-thread behavior remains unchanged when `threading.enabled=false`.
+1. Messages with same corr appear in same Discord thread.
+2. Thread message body contains message text only.
+3. Full metadata appears in local audit log.
+4. Restart preserves thread reuse via mapping store.
+5. Invalid/archived thread remaps cleanly.
+6. Failures remain non-fatal.
 
 ---
 
 ## Test Plan
-- Unit tests:
-  - key selection (`corr` vs `id` fallback)
-  - map store read/write/prune behavior
-  - thread resolution create/reuse/remap
-  - fallback path on API error
-- Integration smoke:
-  - send command with `--wait` and verify SEND/RECV in same thread
-  - repeat same corr chain and verify same thread id
-  - restart daemon and verify reuse
+- config parse tests for bot/token/channel/threading/audit
+- thread map tests (create/reuse/prune/remap)
+- Discord sender tests (bot path + fallback path)
+- content tests: thread body is text-only; metadata in audit log
+- regression tests for publish_send/publish_receive + heartbeat suppression
 
 ---
 
 ## Rollout Plan
-1. Ship disabled by default.
-2. Enable on turq only.
-3. Run ping + command/response smoke tests.
-4. Validate no message loss on failures.
-5. Enable on pg1.
-6. Optionally enable on remaining gateways.
+1. Implement behind config flags.
+2. Enable on turq first.
+3. Validate thread grouping + text-only body + audit logs.
+4. Expand to pg1, then turqette/mini1 path.
