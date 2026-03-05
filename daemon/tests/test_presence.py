@@ -762,8 +762,8 @@ class TestBuildLocalPresenceRecords:
             assert r.ttl_sec == 300
 
     @pytest.mark.asyncio
-    async def test_api_ok_no_sessions_emits_idle(self):
-        """API reachable but empty — emit idle synthetic record."""
+    async def test_api_ok_no_sessions_emits_none(self):
+        """API reachable but empty — emit no synthetic session records."""
         cfg = _make_config(
             node_id="turq",
             oc_instances=[OcInstance(name="turq", agent_id="main")],
@@ -774,16 +774,11 @@ class TestBuildLocalPresenceRecords:
             return_value=(True, [], ""),
         ):
             records = await build_local_presence_records(cfg)
-        assert len(records) == 1
-        assert records[0].gw == "turq"
-        assert records[0].agent == "main"
-        assert records[0].state == "active"
-        assert records[0].status == "idle"
-        assert records[0].session.startswith("hive-turq-")
+        assert records == []
 
     @pytest.mark.asyncio
-    async def test_api_unavailable_emits_error_record(self):
-        """API failure — emit record with state='error' and error detail."""
+    async def test_api_unavailable_emits_none(self):
+        """API failure — emit no synthetic records (runtime snapshot only)."""
         cfg = _make_config(
             node_id="turq",
             oc_instances=[OcInstance(name="turq", agent_id="main")],
@@ -794,12 +789,7 @@ class TestBuildLocalPresenceRecords:
             return_value=(False, [], "OpenClaw CLI not found: openclaw"),
         ):
             records = await build_local_presence_records(cfg)
-        assert len(records) == 1
-        r = records[0]
-        assert r.gw == "turq"
-        assert r.state == "error"
-        assert "api_unavailable" in r.status
-        assert "OpenClaw CLI not found" in r.status
+        assert records == []
 
     @pytest.mark.asyncio
     async def test_standalone_daemon_no_api_call(self):
@@ -812,8 +802,8 @@ class TestBuildLocalPresenceRecords:
         assert records[0].session == "default"
 
     @pytest.mark.asyncio
-    async def test_enrichment_fields_on_error_record(self):
-        """Error records have explicit unknown defaults for enrichment fields."""
+    async def test_api_unavailable_has_no_records_to_enrich(self):
+        """No synthetic error records are emitted for unavailable API."""
         cfg = _make_config(
             node_id="turq",
             oc_instances=[OcInstance(name="turq")],
@@ -824,11 +814,7 @@ class TestBuildLocalPresenceRecords:
             return_value=(False, [], "timeout"),
         ):
             records = await build_local_presence_records(cfg)
-        r = records[0]
-        assert r.model == "unknown"
-        assert r.thinking == "unknown"
-        assert r.context_tokens is None
-        assert r.context_window is None
+        assert records == []
 
     @pytest.mark.asyncio
     async def test_multiple_gateways(self):

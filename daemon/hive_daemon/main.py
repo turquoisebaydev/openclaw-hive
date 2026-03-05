@@ -479,17 +479,29 @@ async def run_daemon(config: HiveConfig) -> None:
                 presence_task: asyncio.Task | None = None
                 if config.presence.enabled and presence_cache is not None:
                     async def _presence_publish_loop() -> None:
+                        last_topics: set[str] = set()
                         while True:
                             try:
                                 records = await build_local_presence_records(config)
+                                current_topics: set[str] = set()
                                 for rec in records:
                                     topic = presence_mqtt_topic(config.topic_prefix, rec)
+                                    current_topics.add(topic)
                                     payload = json.dumps(rec.to_dict())
                                     await client.publish(
                                         topic, payload,
                                         retain=config.presence.retain,
                                     )
                                     log.debug("published presence to %s", topic)
+
+                                # Clear retained topics that are no longer present
+                                # in the runtime snapshot (prevents stale "lying around" data).
+                                if config.presence.retain:
+                                    for stale_topic in sorted(last_topics - current_topics):
+                                        await client.publish(stale_topic, "", retain=True)
+                                        log.debug("cleared stale presence topic %s", stale_topic)
+                                last_topics = current_topics
+
                                 # Prune stale remote entries
                                 if config.presence.discovery.prune_stale:
                                     presence_cache.prune()

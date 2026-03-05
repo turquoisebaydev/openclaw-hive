@@ -74,6 +74,9 @@ class PresenceRecord:
     thinking: str = "unknown"
     context_tokens: int | None = None
     context_window: int | None = None
+    channel_provider: str = ""
+    channel_chat_type: str = ""
+    channel_chat_id: str = ""
     task: TaskSummary = field(default_factory=TaskSummary)
     updated_ts: int = 0
     ttl_sec: int = 300
@@ -101,6 +104,12 @@ class PresenceRecord:
             "updatedTs": self.updated_ts or int(time.time()),
             "ttlSec": self.ttl_sec,
         }
+        if self.channel_provider:
+            d["channel"] = {
+                "provider": self.channel_provider,
+                "chatType": self.channel_chat_type,
+                "chatId": self.channel_chat_id,
+            }
         task_d = self.task.to_dict()
         if task_d:
             d["task"] = task_d
@@ -114,6 +123,7 @@ class PresenceRecord:
         task_raw = data.get("task")
         task = TaskSummary.from_dict(task_raw) if isinstance(task_raw, dict) else TaskSummary()
         ctx = data.get("context") if isinstance(data.get("context"), dict) else {}
+        ch = data.get("channel") if isinstance(data.get("channel"), dict) else {}
         ctx_tokens = ctx.get("tokens") if isinstance(ctx, dict) else None
         ctx_window = ctx.get("window") if isinstance(ctx, dict) else None
         return cls(
@@ -126,6 +136,9 @@ class PresenceRecord:
             thinking=str(data.get("thinking", "unknown")),
             context_tokens=int(ctx_tokens) if isinstance(ctx_tokens, (int, float)) else None,
             context_window=int(ctx_window) if isinstance(ctx_window, (int, float)) else None,
+            channel_provider=str(ch.get("provider", "")),
+            channel_chat_type=str(ch.get("chatType", "")),
+            channel_chat_id=str(ch.get("chatId", "")),
             task=task,
             updated_ts=int(data.get("updatedTs", 0)),
             ttl_sec=int(data.get("ttlSec", 300)),
@@ -337,6 +350,21 @@ def resolve_session_target(
 # Runtime API session enumeration (deterministic RPC, no file scraping)
 # ---------------------------------------------------------------------------
 
+
+def _parse_channel_from_session_key(session_key: str) -> tuple[str, str, str]:
+    """Best-effort parse of provider/chat details from session key."""
+    # Common shapes:
+    # - agent:dev:discord:channel:<id>
+    # - agent:main:telegram:direct:<id>
+    parts = session_key.split(":")
+    if len(parts) >= 5 and parts[0] == "agent":
+        provider = parts[2]
+        chat_type = parts[3]
+        chat_id = ":".join(parts[4:])
+        return provider, chat_type, chat_id
+    return "", "", ""
+
+
 async def _list_sessions_via_api(
     inst: OcInstance,
     *,
@@ -366,46 +394,55 @@ async def _list_sessions_via_api(
 
 
 def _parse_api_session(raw: dict[str, Any]) -> dict[str, Any]:
-    """Parse a single session record from the runtime API response.
-
-    Handles multiple field-name conventions used by different OC versions.
-    """
-    session_id = str(
-        raw.get("sessionId") or raw.get("session_id") or raw.get("id") or ""
-    )
+    """Parse a single session record from the runtime API response."""
+    # Use session key for stable addressing/context; fallback to ids.
+    session_key = str(raw.get("key") or raw.get("sessionKey") or raw.get("sessionId") or raw.get("session_id") or raw.get("id") or "")
     agent = str(raw.get("agent") or raw.get("agentId") or raw.get("agent_id") or "main")
     status = str(raw.get("status") or "idle")
     model = str(raw.get("model") or "unknown")
     thinking = str(raw.get("thinking") or "unknown")
 
-    # Context tokens / window
+    updated_at_ms: int | None = None
+    for k in ("updatedAt", "updated_at", "lastUpdatedAt"):
+        v = raw.get(k)
+        if isinstance(v, (int, float)):
+            updated_at_ms = int(v)
+            break
+
     context_tokens: int | None = None
     context_window: int | None = None
-
-    usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
-    for key in ("inputTokens", "input_tokens", "totalTokens", "total_tokens"):
-        val = usage.get(key)
+    for key in ("contextTokens", "context_tokens"):
+        val = raw.get(key)
         if isinstance(val, (int, float)):
             context_tokens = int(val)
             break
-
     for key in ("contextWindow", "context_window"):
         val = raw.get(key)
         if isinstance(val, (int, float)):
             context_window = int(val)
             break
 
-    # Task / activity fields
+    usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
+    if context_tokens is None:
+        for key in ("inputTokens", "input_tokens", "totalTokens", "total_tokens"):
+            val = usage.get(key)
+            if isinstance(val, (int, float)):
+                context_tokens = int(val)
+                break
+
     summary = str(raw.get("title") or raw.get("summary") or "")[:200]
-    activity = str(raw.get("activity") or "")[:200]
+    activity = str(raw.get("activity") or raw.get("lastStatus") or "")[:200]
     cwd = str(raw.get("cwd") or "")[:200]
     cmdline = str(raw.get("cmdline") or "")[:200]
     url = str(raw.get("url") or "")[:500]
 
+    provider, chat_type, chat_id = _parse_channel_from_session_key(session_key)
+
     return {
-        "session": session_id,
+        "session": session_key,
         "agent": agent,
         "status": status,
+        "updated_at_ms": updated_at_ms,
         "model": model,
         "thinking": thinking,
         "context_tokens": context_tokens,
@@ -415,6 +452,9 @@ def _parse_api_session(raw: dict[str, Any]) -> dict[str, Any]:
         "cwd": cwd,
         "cmdline": cmdline,
         "url": url,
+        "channel_provider": provider,
+        "channel_chat_type": chat_type,
+        "channel_chat_id": chat_id,
     }
 
 
@@ -438,15 +478,19 @@ async def build_local_presence_records(
     records: list[PresenceRecord] = []
     ttl = config.presence.ttl_sec
 
+    cutoff_ms = int(time.time() * 1000) - (ttl * 1000)
     for inst in config.oc_instances:
         ok, api_sessions, err = await _list_sessions_via_api(inst, timeout_s=10.0)
 
-        if ok and api_sessions:
+        if ok:
             for raw in api_sessions:
                 if not isinstance(raw, dict):
                     continue
                 sess = _parse_api_session(raw)
                 if not sess["session"]:
+                    continue
+                updated_ms = sess.get("updated_at_ms")
+                if isinstance(updated_ms, int) and updated_ms < cutoff_ms:
                     continue
                 records.append(PresenceRecord(
                     gw=inst.name,
@@ -458,6 +502,9 @@ async def build_local_presence_records(
                     thinking=sess["thinking"],
                     context_tokens=sess["context_tokens"],
                     context_window=sess["context_window"],
+                    channel_provider=sess.get("channel_provider", ""),
+                    channel_chat_type=sess.get("channel_chat_type", ""),
+                    channel_chat_id=sess.get("channel_chat_id", ""),
                     task=TaskSummary(
                         summary=sess["summary"],
                         activity=sess["activity"],
@@ -465,35 +512,11 @@ async def build_local_presence_records(
                         cwd=sess["cwd"],
                         url=sess["url"],
                     ),
-                    updated_ts=int(time.time()),
+                    updated_ts=int((updated_ms / 1000) if isinstance(updated_ms, int) else time.time()),
                     ttl_sec=ttl,
                 ))
-        elif ok:
-            # API reachable but returned no sessions — emit idle record
-            from hive_daemon.oc_bridge import OcBridge
-            session_id = OcBridge._session_id_for_instance(inst)
-            records.append(PresenceRecord(
-                gw=inst.name,
-                agent=inst.agent_id or "main",
-                session=session_id,
-                state="active",
-                status="idle",
-                updated_ts=int(time.time()),
-                ttl_sec=ttl,
-            ))
         else:
-            # API unavailable — emit explicit error record (no silent fallback)
-            from hive_daemon.oc_bridge import OcBridge
-            session_id = OcBridge._session_id_for_instance(inst)
-            records.append(PresenceRecord(
-                gw=inst.name,
-                agent=inst.agent_id or "main",
-                session=session_id,
-                state="error",
-                status=f"api_unavailable: {err}"[:200],
-                updated_ts=int(time.time()),
-                ttl_sec=ttl,
-            ))
+            log.warning("presence api unavailable for instance %s: %s", inst.name, err)
 
     if not config.oc_instances:
         # Standalone daemon — publish a single node-level record
