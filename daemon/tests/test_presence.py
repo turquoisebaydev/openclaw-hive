@@ -1,9 +1,7 @@
 """Tests for the deterministic session presence registry."""
 
-import json
 import time
-from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -15,11 +13,8 @@ from hive_daemon.presence import (
     PresenceRecord,
     ResolveResult,
     TaskSummary,
-    _enumerate_active_sessions,
-    _extract_session_meta,
-    _extract_text_from_content,
-    _derive_status_and_activity,
-    _read_last_jsonl_entry,
+    _list_sessions_via_api,
+    _parse_api_session,
     build_local_presence_records,
     make_delivery_error,
     presence_mqtt_topic,
@@ -61,22 +56,6 @@ def _make_record(
         updated_ts=int(time.time()),
         ttl_sec=ttl_sec,
     )
-
-
-def _make_state_dir(
-    tmp_path: Path,
-    agent: str = "main",
-    sessions: dict | None = None,
-    jsonl_files: dict[str, list[dict]] | None = None,
-) -> Path:
-    """Create a mock OC state directory with sessions.json and optional jsonl."""
-    sessions_dir = tmp_path / "agents" / agent / "sessions"
-    sessions_dir.mkdir(parents=True)
-    (sessions_dir / "sessions.json").write_text(json.dumps(sessions or {}))
-    for name, entries in (jsonl_files or {}).items():
-        lines = [json.dumps(e) for e in entries]
-        (sessions_dir / f"{name}.jsonl").write_text("\n".join(lines) + "\n")
-    return tmp_path
 
 
 # ── TaskSummary ─────────────────────────────────────────────────────
@@ -207,7 +186,7 @@ class TestPresenceRecord:
         assert r2.ttl_sec == r.ttl_sec
 
 
-# ── PresenceRecord enrichment fields (Phase 5) ────────────────────
+# ── PresenceRecord enrichment fields ───────────────────────────────
 
 class TestPresenceRecordEnrichment:
     """Tests for model/thinking/context enrichment fields."""
@@ -544,328 +523,316 @@ class TestResolveSessionTarget:
         assert result.error["code"] == "SESSION_NOT_FOUND"
 
 
-# ── Session enumeration (Phase 5) ─────────────────────────────────
+# ── Runtime API session listing ────────────────────────────────────
 
-class TestReadLastJsonlEntry:
-    def test_reads_last_entry(self, tmp_path):
-        p = tmp_path / "test.jsonl"
-        p.write_text(
-            json.dumps({"line": 1}) + "\n"
-            + json.dumps({"line": 2, "model": "claude"}) + "\n"
-        )
-        entry = _read_last_jsonl_entry(p)
-        assert entry is not None
-        assert entry["line"] == 2
-        assert entry["model"] == "claude"
+class TestListSessionsViaApi:
+    """Tests for _list_sessions_via_api (runtime API RPC)."""
 
-    def test_returns_none_for_missing_file(self, tmp_path):
-        assert _read_last_jsonl_entry(tmp_path / "nonexistent.jsonl") is None
-
-    def test_returns_none_for_empty_file(self, tmp_path):
-        p = tmp_path / "empty.jsonl"
-        p.write_text("")
-        assert _read_last_jsonl_entry(p) is None
-
-    def test_skips_invalid_json_lines(self, tmp_path):
-        p = tmp_path / "mixed.jsonl"
-        p.write_text(
-            json.dumps({"valid": True}) + "\n"
-            + "not json\n"
-        )
-        entry = _read_last_jsonl_entry(p)
-        assert entry is not None
-        assert entry["valid"] is True
-
-
-class TestExtractSessionMeta:
-    def test_extracts_model_from_entry(self):
-        result = _extract_session_meta(
-            {"model": "claude-sonnet-4-20250514"},
-            {},
-        )
-        assert result["model"] == "claude-sonnet-4-20250514"
-
-    def test_extracts_model_from_nested_message(self):
-        result = _extract_session_meta(
-            {"message": {"model": "gpt-5.3-codex"}},
-            {},
-        )
-        assert result["model"] == "gpt-5.3-codex"
-
-    def test_falls_back_to_index_model(self):
-        result = _extract_session_meta(
-            {},
-            {"model": "claude-haiku-4-5-20251001"},
-        )
-        assert result["model"] == "claude-haiku-4-5-20251001"
-
-    def test_defaults_to_unknown(self):
-        result = _extract_session_meta({}, {})
-        assert result["model"] == "unknown"
-        assert result["thinking"] == "unknown"
-        assert result["context_tokens"] is None
-        assert result["context_window"] is None
-
-    def test_extracts_thinking_string(self):
-        result = _extract_session_meta({"thinking": "low"}, {})
-        assert result["thinking"] == "low"
-
-    def test_extracts_thinking_dict(self):
-        result = _extract_session_meta({"thinking": {"type": "enabled"}}, {})
-        assert result["thinking"] == "enabled"
-
-    def test_extracts_context_tokens(self):
-        result = _extract_session_meta(
-            {"usage": {"inputTokens": 5000}},
-            {},
-        )
-        assert result["context_tokens"] == 5000
-
-    def test_extracts_context_window(self):
-        result = _extract_session_meta(
-            {"contextWindow": 200000},
-            {},
-        )
-        assert result["context_window"] == 200000
-
-
-class TestPresenceContentExtraction:
-    def test_extract_text_from_content_list(self):
-        content = [
-            {"type": "thinking", "thinking": "Analyzing"},
-            {"type": "text", "text": "Generating response now"},
+    @pytest.mark.asyncio
+    async def test_successful_list_dict_format(self):
+        """API returns {"sessions": [...]} dict format."""
+        inst = OcInstance(name="turq")
+        mock_sessions = [
+            {"sessionId": "s1", "agent": "main", "model": "claude-sonnet"},
+            {"sessionId": "s2", "agent": "main", "model": "claude-opus"},
         ]
-        out = _extract_text_from_content(content)
-        assert "Analyzing" in out
-        assert "Generating response now" in out
+        with patch(
+            "hive_daemon.presence._run_openclaw_json",
+            new_callable=AsyncMock,
+            return_value=(True, {"sessions": mock_sessions}, ""),
+        ):
+            ok, sessions, err = await _list_sessions_via_api(inst)
+        assert ok
+        assert len(sessions) == 2
+        assert err == ""
 
-    def test_derive_status_running_for_assistant_without_stop_reason(self):
-        now_ms = int(time.time() * 1000)
-        entry = {"message": {"role": "assistant", "content": [{"type": "text", "text": "Working"}]}}
-        status, activity = _derive_status_and_activity(entry, now_ms)
-        assert status == "running"
-        assert activity == "generating response"
+    @pytest.mark.asyncio
+    async def test_successful_list_array_format(self):
+        """API returns a flat list of sessions."""
+        inst = OcInstance(name="turq")
+        mock_sessions = [{"sessionId": "s1", "agent": "main"}]
+        with patch(
+            "hive_daemon.presence._run_openclaw_json",
+            new_callable=AsyncMock,
+            return_value=(True, mock_sessions, ""),
+        ):
+            ok, sessions, err = await _list_sessions_via_api(inst)
+        assert ok
+        assert len(sessions) == 1
 
-    def test_derive_status_waiting_for_recent_user(self):
-        now_ms = int(time.time() * 1000)
-        entry = {"message": {"role": "user", "content": [{"type": "text", "text": "please check logs"}]}}
-        status, activity = _derive_status_and_activity(entry, now_ms)
-        assert status == "waiting"
-        assert "awaiting response" in activity
+    @pytest.mark.asyncio
+    async def test_api_unavailable(self):
+        inst = OcInstance(name="turq")
+        with patch(
+            "hive_daemon.presence._run_openclaw_json",
+            new_callable=AsyncMock,
+            return_value=(False, None, "connection refused"),
+        ):
+            ok, sessions, err = await _list_sessions_via_api(inst)
+        assert not ok
+        assert sessions == []
+        assert "connection refused" in err
 
+    @pytest.mark.asyncio
+    async def test_unexpected_response_format(self):
+        inst = OcInstance(name="turq")
+        with patch(
+            "hive_daemon.presence._run_openclaw_json",
+            new_callable=AsyncMock,
+            return_value=(True, "not-json-object", ""),
+        ):
+            ok, sessions, err = await _list_sessions_via_api(inst)
+        assert not ok
+        assert "unexpected response format" in err
 
-class TestEnumerateActiveSessions:
-    def test_no_agents_dir(self, tmp_path):
-        assert _enumerate_active_sessions(tmp_path) == []
+    @pytest.mark.asyncio
+    async def test_empty_sessions(self):
+        inst = OcInstance(name="turq")
+        with patch(
+            "hive_daemon.presence._run_openclaw_json",
+            new_callable=AsyncMock,
+            return_value=(True, {"sessions": []}, ""),
+        ):
+            ok, sessions, err = await _list_sessions_via_api(inst)
+        assert ok
+        assert sessions == []
 
-    def test_empty_sessions_index(self, tmp_path):
-        _make_state_dir(tmp_path, sessions={})
-        assert _enumerate_active_sessions(tmp_path) == []
-
-    def test_all_stale_sessions(self, tmp_path):
-        old_ms = int(time.time() * 1000) - 999999000
-        _make_state_dir(tmp_path, sessions={"old-sess": {"updatedAt": old_ms}})
-        assert _enumerate_active_sessions(tmp_path, active_window_s=300) == []
-
-    def test_active_sessions_returned(self, tmp_path):
-        now_ms = int(time.time() * 1000)
-        _make_state_dir(tmp_path, sessions={
-            "sess-alpha": {"updatedAt": now_ms - 1000},
-            "sess-beta": {"updatedAt": now_ms - 2000},
-            "sess-old": {"updatedAt": now_ms - 999999000},
-        })
-        results = _enumerate_active_sessions(tmp_path, active_window_s=300)
-        assert len(results) == 2
-        keys = {r["session"] for r in results}
-        assert keys == {"sess-alpha", "sess-beta"}
-
-    def test_extracts_model_from_jsonl(self, tmp_path):
-        now_ms = int(time.time() * 1000)
-        _make_state_dir(
-            tmp_path,
-            sessions={"my-session": {"updatedAt": now_ms}},
-            jsonl_files={"my-session": [
-                {"message": {"role": "assistant", "model": "claude-haiku-4-5-20251001", "thinking": "none", "content": [{"type":"text","text":"done"}] }},
-            ]},
+    @pytest.mark.asyncio
+    async def test_uses_resolved_openclaw_cmd(self):
+        inst = OcInstance(name="turq", openclaw_cmd="/opt/oc/bin/openclaw", profile="turq")
+        with patch(
+            "hive_daemon.presence._run_openclaw_json",
+            new_callable=AsyncMock,
+            return_value=(True, [], ""),
+        ) as mock_run:
+            await _list_sessions_via_api(inst)
+        mock_run.assert_called_once_with(
+            openclaw_cmd="/opt/oc/bin/openclaw",
+            profile="turq",
+            args=["sessions", "list", "--json"],
+            timeout_s=10.0,
         )
-        results = _enumerate_active_sessions(tmp_path, active_window_s=300)
-        assert len(results) == 1
-        assert results[0]["model"] == "claude-haiku-4-5-20251001"
-        assert results[0]["thinking"] == "none"
-        assert results[0]["status"] in {"running", "idle"}
-
-    def test_extracts_context_from_jsonl(self, tmp_path):
-        now_ms = int(time.time() * 1000)
-        _make_state_dir(
-            tmp_path,
-            sessions={"ctx-session": {"updatedAt": now_ms}},
-            jsonl_files={"ctx-session": [
-                {"model": "claude-opus-4-20250514", "usage": {"inputTokens": 12000}, "contextWindow": 200000},
-            ]},
-        )
-        results = _enumerate_active_sessions(tmp_path, active_window_s=300)
-        assert results[0]["context_tokens"] == 12000
-        assert results[0]["context_window"] == 200000
-
-    def test_missing_jsonl_defaults_to_unknown(self, tmp_path):
-        now_ms = int(time.time() * 1000)
-        _make_state_dir(tmp_path, sessions={"no-jsonl": {"updatedAt": now_ms}})
-        results = _enumerate_active_sessions(tmp_path, active_window_s=300)
-        assert len(results) == 1
-        assert results[0]["model"] == "unknown"
-        assert results[0]["thinking"] == "unknown"
-        assert results[0]["context_tokens"] is None
-        assert results[0]["context_window"] is None
 
 
-    def test_uses_session_file_path_from_index(self, tmp_path):
-        now_ms = int(time.time() * 1000)
-        sessions_dir = tmp_path / "agents" / "dev" / "sessions"
-        sessions_dir.mkdir(parents=True)
-        actual = sessions_dir / "abc-uuid.jsonl"
-        actual.write_text(json.dumps({
-            "message": {
-                "role": "assistant",
-                "model": "gpt-5.3-codex",
-                "content": [{"type": "thinking", "thinking": "Generating response"}],
-                "stopReason": "toolUse",
-            }
-        }) + "\n")
-        (sessions_dir / "sessions.json").write_text(json.dumps({
-            "agent:dev:discord:channel:123": {
-                "updatedAt": now_ms,
-                "sessionFile": str(actual),
-                "model": "gpt-5.3-codex",
-            }
-        }))
-        results = _enumerate_active_sessions(tmp_path, active_window_s=300)
-        assert len(results) == 1
-        assert results[0]["summary"] != ""
-        assert results[0]["model"] == "gpt-5.3-codex"
+# ── Parse API session ──────────────────────────────────────────────
 
-    def test_multiple_agents(self, tmp_path):
-        """Sessions from different agents are all enumerated."""
-        now_ms = int(time.time() * 1000)
-        # Agent "main"
-        _make_state_dir(tmp_path, agent="main", sessions={"sess-1": {"updatedAt": now_ms}})
-        # Agent "alt" — create a second agent dir
-        alt_dir = tmp_path / "agents" / "alt" / "sessions"
-        alt_dir.mkdir(parents=True)
-        (alt_dir / "sessions.json").write_text(json.dumps({"sess-2": {"updatedAt": now_ms}}))
-        results = _enumerate_active_sessions(tmp_path, active_window_s=300)
-        assert len(results) == 2
-        agents = {r["agent"] for r in results}
-        assert agents == {"main", "alt"}
+class TestParseApiSession:
+    def test_basic_fields(self):
+        raw = {
+            "sessionId": "sess-1",
+            "agent": "main",
+            "status": "idle",
+            "model": "claude-sonnet-4-20250514",
+            "thinking": "low",
+            "title": "Working on tests",
+        }
+        parsed = _parse_api_session(raw)
+        assert parsed["session"] == "sess-1"
+        assert parsed["agent"] == "main"
+        assert parsed["status"] == "idle"
+        assert parsed["model"] == "claude-sonnet-4-20250514"
+        assert parsed["thinking"] == "low"
+        assert parsed["summary"] == "Working on tests"
+
+    def test_alternative_field_names(self):
+        raw = {
+            "session_id": "sess-2",
+            "agent_id": "dev",
+            "model": "gpt-5",
+        }
+        parsed = _parse_api_session(raw)
+        assert parsed["session"] == "sess-2"
+        assert parsed["agent"] == "dev"
+
+    def test_id_field_fallback(self):
+        raw = {"id": "sess-3"}
+        parsed = _parse_api_session(raw)
+        assert parsed["session"] == "sess-3"
+
+    def test_context_from_usage(self):
+        raw = {
+            "sessionId": "s1",
+            "usage": {"inputTokens": 5000},
+            "contextWindow": 200000,
+        }
+        parsed = _parse_api_session(raw)
+        assert parsed["context_tokens"] == 5000
+        assert parsed["context_window"] == 200000
+
+    def test_context_alternative_keys(self):
+        raw = {
+            "sessionId": "s1",
+            "usage": {"total_tokens": 7500},
+            "context_window": 128000,
+        }
+        parsed = _parse_api_session(raw)
+        assert parsed["context_tokens"] == 7500
+        assert parsed["context_window"] == 128000
+
+    def test_defaults_for_missing_fields(self):
+        parsed = _parse_api_session({})
+        assert parsed["session"] == ""
+        assert parsed["agent"] == "main"
+        assert parsed["model"] == "unknown"
+        assert parsed["thinking"] == "unknown"
+        assert parsed["status"] == "idle"
+        assert parsed["context_tokens"] is None
+        assert parsed["context_window"] is None
+        assert parsed["summary"] == ""
+        assert parsed["activity"] == ""
+        assert parsed["cwd"] == ""
+        assert parsed["cmdline"] == ""
+        assert parsed["url"] == ""
+
+    def test_truncates_long_values(self):
+        raw = {
+            "sessionId": "s1",
+            "title": "x" * 500,
+            "cwd": "y" * 500,
+            "url": "z" * 1000,
+        }
+        parsed = _parse_api_session(raw)
+        assert len(parsed["summary"]) == 200
+        assert len(parsed["cwd"]) == 200
+        assert len(parsed["url"]) == 500
+
+    def test_summary_from_title_or_summary(self):
+        assert _parse_api_session({"title": "From title"})["summary"] == "From title"
+        assert _parse_api_session({"summary": "From summary"})["summary"] == "From summary"
+        # title takes precedence
+        assert _parse_api_session({"title": "T", "summary": "S"})["summary"] == "T"
+
+    def test_task_fields(self):
+        raw = {
+            "sessionId": "s1",
+            "activity": "generating response",
+            "cwd": "/home/turq",
+            "cmdline": "pytest tests/ -v",
+            "url": "https://github.com/example",
+        }
+        parsed = _parse_api_session(raw)
+        assert parsed["activity"] == "generating response"
+        assert parsed["cwd"] == "/home/turq"
+        assert parsed["cmdline"] == "pytest tests/ -v"
+        assert parsed["url"] == "https://github.com/example"
 
 
-# ── Build local presence records (Phase 5) ─────────────────────────
+# ── Build local presence records (runtime API) ─────────────────────
 
 class TestBuildLocalPresenceRecords:
-    def test_with_oc_instances(self):
-        cfg = _make_config(
-            node_id="turq",
-            oc_instances=[
-                OcInstance(name="turq", agent_id="main"),
-                OcInstance(name="mini1", agent_id="default"),
-            ],
-            presence=PresenceConfig(ttl_sec=120),
-        )
-        records = build_local_presence_records(cfg)
-        assert len(records) == 2
-        gws = {r.gw for r in records}
-        assert gws == {"turq", "mini1"}
-        for r in records:
-            assert r.ttl_sec == 120
-            assert r.state == "active"
 
-    def test_without_oc_instances(self):
-        cfg = _make_config(node_id="standalone")
-        records = build_local_presence_records(cfg)
-        assert len(records) == 1
-        assert records[0].gw == "standalone"
-        assert records[0].agent == "daemon"
-        assert records[0].session == "default"
-
-    def test_agent_defaults_to_main(self):
-        cfg = _make_config(
-            node_id="turq",
-            oc_instances=[OcInstance(name="turq")],
-        )
-        records = build_local_presence_records(cfg)
-        assert records[0].agent == "main"
-
-    def test_real_sessions_produce_multiple_records(self, tmp_path):
-        """When real active sessions exist, one record per session is emitted."""
-        now_ms = int(time.time() * 1000)
-        _make_state_dir(
-            tmp_path,
-            sessions={
-                "sess-1": {"updatedAt": now_ms - 1000},
-                "sess-2": {"updatedAt": now_ms - 2000},
-            },
-            jsonl_files={
-                "sess-1": [{"model": "claude-sonnet-4-20250514", "thinking": "low"}],
-                "sess-2": [{"model": "claude-opus-4-20250514", "usage": {"inputTokens": 9999}}],
-            },
-        )
+    @pytest.mark.asyncio
+    async def test_api_returns_sessions(self):
+        """API returns active sessions — one record per session."""
         cfg = _make_config(
             node_id="turq",
             oc_instances=[OcInstance(name="turq")],
             presence=PresenceConfig(ttl_sec=300),
         )
-        with patch("hive_daemon.presence._state_dir_for_profile", return_value=tmp_path):
-            records = build_local_presence_records(cfg)
+        mock_sessions = [
+            {
+                "sessionId": "s1", "agent": "main",
+                "model": "claude-sonnet-4-20250514", "thinking": "low",
+                "status": "idle", "title": "Task A",
+            },
+            {
+                "sessionId": "s2", "agent": "main",
+                "model": "claude-opus-4-20250514", "thinking": "high",
+                "status": "running", "usage": {"inputTokens": 9999},
+                "title": "Task B",
+            },
+        ]
+        with patch(
+            "hive_daemon.presence._list_sessions_via_api",
+            new_callable=AsyncMock,
+            return_value=(True, mock_sessions, ""),
+        ):
+            records = await build_local_presence_records(cfg)
         assert len(records) == 2
         by_session = {r.session: r for r in records}
-        assert "sess-1" in by_session
-        assert "sess-2" in by_session
-        assert by_session["sess-1"].model == "claude-sonnet-4-20250514"
-        assert by_session["sess-1"].thinking == "low"
-        assert by_session["sess-2"].model == "claude-opus-4-20250514"
-        assert by_session["sess-2"].context_tokens == 9999
+        assert "s1" in by_session
+        assert "s2" in by_session
+        assert by_session["s1"].model == "claude-sonnet-4-20250514"
+        assert by_session["s1"].thinking == "low"
+        assert by_session["s2"].model == "claude-opus-4-20250514"
+        assert by_session["s2"].context_tokens == 9999
         for r in records:
             assert r.gw == "turq"
             assert r.state == "active"
             assert r.ttl_sec == 300
 
-    def test_fallback_synthetic_when_no_sessions(self):
-        """Falls back to synthetic record when no active sessions found."""
+    @pytest.mark.asyncio
+    async def test_api_ok_no_sessions_emits_idle(self):
+        """API reachable but empty — emit idle synthetic record."""
         cfg = _make_config(
             node_id="turq",
             oc_instances=[OcInstance(name="turq", agent_id="main")],
         )
-        records = build_local_presence_records(cfg)
+        with patch(
+            "hive_daemon.presence._list_sessions_via_api",
+            new_callable=AsyncMock,
+            return_value=(True, [], ""),
+        ):
+            records = await build_local_presence_records(cfg)
         assert len(records) == 1
         assert records[0].gw == "turq"
         assert records[0].agent == "main"
+        assert records[0].state == "active"
+        assert records[0].status == "idle"
         assert records[0].session.startswith("hive-turq-")
 
-    def test_enrichment_fields_default_on_fallback(self):
-        """Fallback synthetic records have explicit unknown defaults."""
+    @pytest.mark.asyncio
+    async def test_api_unavailable_emits_error_record(self):
+        """API failure — emit record with state='error' and error detail."""
+        cfg = _make_config(
+            node_id="turq",
+            oc_instances=[OcInstance(name="turq", agent_id="main")],
+        )
+        with patch(
+            "hive_daemon.presence._list_sessions_via_api",
+            new_callable=AsyncMock,
+            return_value=(False, [], "OpenClaw CLI not found: openclaw"),
+        ):
+            records = await build_local_presence_records(cfg)
+        assert len(records) == 1
+        r = records[0]
+        assert r.gw == "turq"
+        assert r.state == "error"
+        assert "api_unavailable" in r.status
+        assert "OpenClaw CLI not found" in r.status
+
+    @pytest.mark.asyncio
+    async def test_standalone_daemon_no_api_call(self):
+        """Standalone daemon (no OC instances) emits node-level record."""
+        cfg = _make_config(node_id="standalone")
+        records = await build_local_presence_records(cfg)
+        assert len(records) == 1
+        assert records[0].gw == "standalone"
+        assert records[0].agent == "daemon"
+        assert records[0].session == "default"
+
+    @pytest.mark.asyncio
+    async def test_enrichment_fields_on_error_record(self):
+        """Error records have explicit unknown defaults for enrichment fields."""
         cfg = _make_config(
             node_id="turq",
             oc_instances=[OcInstance(name="turq")],
         )
-        records = build_local_presence_records(cfg)
+        with patch(
+            "hive_daemon.presence._list_sessions_via_api",
+            new_callable=AsyncMock,
+            return_value=(False, [], "timeout"),
+        ):
+            records = await build_local_presence_records(cfg)
         r = records[0]
         assert r.model == "unknown"
         assert r.thinking == "unknown"
         assert r.context_tokens is None
         assert r.context_window is None
 
-    def test_multiple_gateways_with_real_sessions(self, tmp_path):
-        """Multiple OC instances each discover their own sessions."""
-        now_ms = int(time.time() * 1000)
-        # Create two separate state dirs
-        turq_dir = tmp_path / "turq_state"
-        mini1_dir = tmp_path / "mini1_state"
-
-        _make_state_dir(turq_dir, sessions={"turq-sess": {"updatedAt": now_ms}})
-        _make_state_dir(mini1_dir, sessions={
-            "mini1-sess-a": {"updatedAt": now_ms},
-            "mini1-sess-b": {"updatedAt": now_ms},
-        })
-
+    @pytest.mark.asyncio
+    async def test_multiple_gateways(self):
+        """Multiple OC instances each get their own API call."""
         cfg = _make_config(
             node_id="turq",
             oc_instances=[
@@ -874,21 +841,90 @@ class TestBuildLocalPresenceRecords:
             ],
             presence=PresenceConfig(ttl_sec=300),
         )
+        turq_sessions = [{"sessionId": "turq-s1", "agent": "main", "model": "claude-sonnet"}]
+        mini1_sessions = [
+            {"sessionId": "mini1-a", "agent": "main", "model": "claude-haiku"},
+            {"sessionId": "mini1-b", "agent": "main", "model": "claude-opus"},
+        ]
 
-        def _mock_state_dir(profile):
-            if profile == "mini1":
-                return mini1_dir
-            return turq_dir
+        call_count = 0
 
-        with patch("hive_daemon.presence._state_dir_for_profile", side_effect=_mock_state_dir):
-            records = build_local_presence_records(cfg)
+        async def mock_list(inst, *, timeout_s=10.0):
+            nonlocal call_count
+            call_count += 1
+            if inst.name == "turq":
+                return True, turq_sessions, ""
+            return True, mini1_sessions, ""
 
+        with patch("hive_daemon.presence._list_sessions_via_api", side_effect=mock_list):
+            records = await build_local_presence_records(cfg)
+
+        assert call_count == 2
         assert len(records) == 3
-        gw_counts = {}
+        gw_counts: dict[str, int] = {}
         for r in records:
             gw_counts[r.gw] = gw_counts.get(r.gw, 0) + 1
         assert gw_counts["turq"] == 1
         assert gw_counts["mini1"] == 2
+
+    @pytest.mark.asyncio
+    async def test_skips_sessions_with_empty_id(self):
+        """Sessions with empty id field are skipped."""
+        cfg = _make_config(
+            node_id="turq",
+            oc_instances=[OcInstance(name="turq")],
+        )
+        mock_sessions = [
+            {"sessionId": "valid", "agent": "main"},
+            {"agent": "main"},  # no session id
+            {"sessionId": "", "agent": "main"},  # empty session id
+        ]
+        with patch(
+            "hive_daemon.presence._list_sessions_via_api",
+            new_callable=AsyncMock,
+            return_value=(True, mock_sessions, ""),
+        ):
+            records = await build_local_presence_records(cfg)
+        assert len(records) == 1
+        assert records[0].session == "valid"
+
+    @pytest.mark.asyncio
+    async def test_skips_non_dict_entries(self):
+        """Non-dict entries in API response are ignored."""
+        cfg = _make_config(
+            node_id="turq",
+            oc_instances=[OcInstance(name="turq")],
+        )
+        mock_sessions = [
+            {"sessionId": "valid", "agent": "main"},
+            "not-a-dict",
+            42,
+            None,
+        ]
+        with patch(
+            "hive_daemon.presence._list_sessions_via_api",
+            new_callable=AsyncMock,
+            return_value=(True, mock_sessions, ""),
+        ):
+            records = await build_local_presence_records(cfg)
+        assert len(records) == 1
+        assert records[0].session == "valid"
+
+    @pytest.mark.asyncio
+    async def test_ttl_from_config(self):
+        """Records use ttl from presence config."""
+        cfg = _make_config(
+            node_id="turq",
+            oc_instances=[OcInstance(name="turq")],
+            presence=PresenceConfig(ttl_sec=120),
+        )
+        with patch(
+            "hive_daemon.presence._list_sessions_via_api",
+            new_callable=AsyncMock,
+            return_value=(True, [{"sessionId": "s1", "agent": "main"}], ""),
+        ):
+            records = await build_local_presence_records(cfg)
+        assert records[0].ttl_sec == 120
 
 
 # ── MQTT topic builder ──────────────────────────────────────────────

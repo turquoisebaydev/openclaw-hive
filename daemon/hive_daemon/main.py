@@ -481,7 +481,7 @@ async def run_daemon(config: HiveConfig) -> None:
                     async def _presence_publish_loop() -> None:
                         while True:
                             try:
-                                records = build_local_presence_records(config)
+                                records = await build_local_presence_records(config)
                                 for rec in records:
                                     topic = presence_mqtt_topic(config.topic_prefix, rec)
                                     payload = json.dumps(rec.to_dict())

@@ -9,16 +9,13 @@ No LLM invocation anywhere in this module.
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 import time
-import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
-from hive_daemon.config import HiveConfig, PresenceConfig
+from hive_daemon.config import HiveConfig, OcInstance, PresenceConfig
+from hive_daemon.probe import _run_openclaw_json
 
 log = logging.getLogger(__name__)
 
@@ -337,269 +334,126 @@ def resolve_session_target(
 
 
 # ---------------------------------------------------------------------------
-# Local session enumeration (deterministic filesystem reads)
+# Runtime API session enumeration (deterministic RPC, no file scraping)
 # ---------------------------------------------------------------------------
 
-def _state_dir_for_profile(profile: str | None) -> Path:
-    """OpenClaw state directory for a given profile."""
-    home = Path.home()
-    return home / (f".openclaw-{profile}" if profile else ".openclaw")
+async def _list_sessions_via_api(
+    inst: OcInstance,
+    *,
+    timeout_s: float = 10.0,
+) -> tuple[bool, list[dict[str, Any]], str]:
+    """List active sessions via OpenClaw runtime API.
+
+    Calls ``openclaw sessions list --json`` for the given instance.
+    Returns: (ok, sessions_list, error_string).
+    """
+    ok, data, err = await _run_openclaw_json(
+        openclaw_cmd=inst.resolved_openclaw_cmd,
+        profile=inst.profile,
+        args=["sessions", "list", "--json"],
+        timeout_s=timeout_s,
+    )
+    if not ok:
+        return False, [], err
+    if not isinstance(data, (dict, list)):
+        return False, [], "unexpected response format"
+
+    sessions = data if isinstance(data, list) else data.get("sessions", [])
+    if not isinstance(sessions, list):
+        return False, [], "sessions field is not a list"
+
+    return True, sessions, ""
 
 
-def _read_last_jsonl_entry(path: Path, max_bytes: int = 32768) -> dict[str, Any] | None:
-    """Best-effort: read last valid JSON object from a .jsonl file."""
-    try:
-        with path.open("rb") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            f.seek(max(0, size - max_bytes), os.SEEK_SET)
-            data = f.read()
-        for line in reversed(data.decode(errors="replace").splitlines()):
-            line = line.strip()
-            if line.startswith("{"):
-                try:
-                    return json.loads(line)
-                except Exception:
-                    continue
-    except Exception:
-        pass
-    return None
+def _parse_api_session(raw: dict[str, Any]) -> dict[str, Any]:
+    """Parse a single session record from the runtime API response.
 
+    Handles multiple field-name conventions used by different OC versions.
+    """
+    session_id = str(
+        raw.get("sessionId") or raw.get("session_id") or raw.get("id") or ""
+    )
+    agent = str(raw.get("agent") or raw.get("agentId") or raw.get("agent_id") or "main")
+    status = str(raw.get("status") or "idle")
+    model = str(raw.get("model") or "unknown")
+    thinking = str(raw.get("thinking") or "unknown")
 
-def _entry_message(entry: dict[str, Any]) -> dict[str, Any]:
-    """Return nested message object when present (jsonl events wrap it)."""
-    msg = entry.get("message")
-    if isinstance(msg, dict):
-        return msg
-    return entry
-
-
-def _extract_text_from_content(content: Any) -> str:
-    """Extract compact text from OpenClaw message content payloads."""
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") == "text":
-                txt = item.get("text")
-                if isinstance(txt, str) and txt.strip():
-                    parts.append(txt.strip())
-            elif item.get("type") == "thinking":
-                t = item.get("thinking")
-                if isinstance(t, str) and t.strip():
-                    parts.append(t.strip())
-        if parts:
-            return " ".join(parts)
-    return ""
-
-
-def _derive_status_and_activity(entry: dict[str, Any], updated_ms: int) -> tuple[str, str]:
-    """Derive deterministic session status/activity from latest event."""
-    now_ms = int(time.time() * 1000)
-    age_ms = max(0, now_ms - updated_ms)
-    msg = _entry_message(entry)
-    role = msg.get("role") if isinstance(msg.get("role"), str) else ""
-    stop_reason = msg.get("stopReason") if isinstance(msg.get("stopReason"), str) else ""
-    tool_name = msg.get("toolName") if isinstance(msg.get("toolName"), str) else ""
-
-    if role == "assistant":
-        if not stop_reason and age_ms <= 30_000:
-            return "running", "generating response"
-        return "idle", (f"completed ({stop_reason})" if stop_reason else "assistant response")
-    if role in {"tool", "toolResult"}:
-        activity = f"tool {tool_name}" if tool_name else "tool execution"
-        return ("running" if age_ms <= 30_000 else "idle", activity)
-    if role == "user":
-        text = _extract_text_from_content(msg.get("content"))
-        if text:
-            return ("waiting" if age_ms <= 120_000 else "idle", f"awaiting response: {text[:120]}")
-        return ("waiting" if age_ms <= 120_000 else "idle", "awaiting response")
-
-    return "idle", ""
-
-
-def _extract_session_meta(
-    entry: dict[str, Any],
-    index_meta: dict[str, Any],
-) -> dict[str, Any]:
-    """Extract model/thinking/context from latest jsonl event + index metadata."""
-    model = "unknown"
-    thinking = "unknown"
+    # Context tokens / window
     context_tokens: int | None = None
     context_window: int | None = None
 
-    msg = _entry_message(entry)
-
-    for src in (msg, entry, index_meta):
-        m = src.get("model") if isinstance(src, dict) else None
-        if isinstance(m, str) and m:
-            model = m
-            break
-
-    t = msg.get("thinking")
-    if isinstance(t, str) and t:
-        thinking = t
-    elif isinstance(t, dict):
-        thinking = str(t.get("type", "unknown"))
-
-    usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else {}
+    usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
     for key in ("inputTokens", "input_tokens", "totalTokens", "total_tokens"):
         val = usage.get(key)
         if isinstance(val, (int, float)):
             context_tokens = int(val)
             break
 
-    for key in ("contextWindow", "context_window", "maxTokens", "max_tokens"):
-        val = msg.get(key)
+    for key in ("contextWindow", "context_window"):
+        val = raw.get(key)
         if isinstance(val, (int, float)):
             context_window = int(val)
             break
 
+    # Task / activity fields
+    summary = str(raw.get("title") or raw.get("summary") or "")[:200]
+    activity = str(raw.get("activity") or "")[:200]
+    cwd = str(raw.get("cwd") or "")[:200]
+    cmdline = str(raw.get("cmdline") or "")[:200]
+    url = str(raw.get("url") or "")[:500]
+
     return {
+        "session": session_id,
+        "agent": agent,
+        "status": status,
         "model": model,
         "thinking": thinking,
         "context_tokens": context_tokens,
         "context_window": context_window,
+        "summary": summary,
+        "activity": activity,
+        "cwd": cwd,
+        "cmdline": cmdline,
+        "url": url,
     }
-
-
-def _enumerate_active_sessions(
-    state_dir: Path,
-    active_window_s: int = 300,
-) -> list[dict[str, Any]]:
-    """Enumerate active sessions from local OC state directory.
-
-    Reads sessions.json index files and best-effort session .jsonl files
-    to collect per-session metadata.  All operations are deterministic
-    (filesystem reads only, no LLM).
-    """
-    now_ms = int(time.time() * 1000)
-    cutoff_ms = now_ms - (active_window_s * 1000)
-
-    agents_dir = state_dir / "agents"
-    if not agents_dir.is_dir():
-        return []
-
-    results: list[dict[str, Any]] = []
-
-    try:
-        agent_dirs = [d for d in agents_dir.iterdir() if d.is_dir()]
-    except OSError:
-        return []
-
-    for agent_dir in agent_dirs:
-        agent_name = agent_dir.name
-        sessions_dir = agent_dir / "sessions"
-        sessions_index = sessions_dir / "sessions.json"
-        if not sessions_index.exists():
-            continue
-        try:
-            idx = json.loads(sessions_index.read_text())
-        except Exception:
-            continue
-        if not isinstance(idx, dict):
-            continue
-
-        for skey, meta in idx.items():
-            if not isinstance(meta, dict):
-                continue
-            updated = meta.get("updatedAt")
-            if not isinstance(updated, (int, float)):
-                continue
-            if updated < cutoff_ms:
-                continue
-
-            # Best-effort: read session jsonl for model/context/activity info.
-            # Prefer explicit sessionFile from sessions.json (actual file name is
-            # often UUID-based), then fallback to <session-key>.jsonl.
-            jsonl_entry: dict[str, Any] = {}
-            jsonl_path: Path | None = None
-            session_file = meta.get("sessionFile")
-            if isinstance(session_file, str) and session_file.strip():
-                candidate = Path(session_file)
-                jsonl_path = candidate if candidate.is_absolute() else (sessions_dir / candidate)
-            if jsonl_path is None:
-                jsonl_path = sessions_dir / f"{skey}.jsonl"
-            if jsonl_path.exists():
-                entry = _read_last_jsonl_entry(jsonl_path)
-                if entry:
-                    jsonl_entry = entry
-
-            extracted = _extract_session_meta(jsonl_entry, meta)
-
-            msg = _entry_message(jsonl_entry)
-
-            summary = ""
-            for src in (meta, msg, jsonl_entry):
-                t = src.get("title") if isinstance(src, dict) else None
-                if isinstance(t, str) and t.strip():
-                    summary = t.strip()[:200]
-                    break
-            if not summary:
-                summary = _extract_text_from_content(msg.get("content"))[:200] if msg else ""
-
-            status, activity = _derive_status_and_activity(jsonl_entry, int(updated))
-            if not activity and msg:
-                sr = msg.get("stopReason")
-                if isinstance(sr, str) and sr:
-                    activity = sr
-
-            cwd = str(msg.get("cwd", ""))[:200] if msg else ""
-            cmdline = str(msg.get("cmdline", ""))[:200] if msg else ""
-            url = str(msg.get("url", ""))[:500] if msg else ""
-
-            results.append({
-                "agent": agent_name,
-                "session": skey,
-                "updated_at_ms": int(updated),
-                "status": status,
-                "model": extracted["model"],
-                "thinking": extracted["thinking"],
-                "context_tokens": extracted["context_tokens"],
-                "context_window": extracted["context_window"],
-                "summary": summary,
-                "activity": activity,
-                "cmdline": cmdline,
-                "cwd": cwd,
-                "url": url,
-            })
-
-    return results
 
 
 # ---------------------------------------------------------------------------
 # Presence publisher (builds records for local sessions)
 # ---------------------------------------------------------------------------
 
-def build_local_presence_records(
+async def build_local_presence_records(
     config: HiveConfig,
 ) -> list[PresenceRecord]:
     """Build presence records for all locally managed OC instances.
 
-    Enumerates actual active sessions from local OC state directories and
-    emits one PresenceRecord per session.  Falls back to a single synthetic
-    record per instance when no active sessions are found.
+    Calls the OpenClaw runtime API (``openclaw sessions list --json``) to
+    enumerate active sessions and emits one PresenceRecord per session.
 
-    This is deterministic — reads only from config and local files, no LLM.
+    When the API is unavailable, emits an explicit error record with
+    ``state="error"`` — never silently falls back to file scraping.
+
+    This is deterministic — runtime API / CLI JSON only, no LLM.
     """
     records: list[PresenceRecord] = []
     ttl = config.presence.ttl_sec
 
     for inst in config.oc_instances:
-        state_dir = _state_dir_for_profile(inst.profile)
-        active_sessions = _enumerate_active_sessions(state_dir, active_window_s=ttl)
+        ok, api_sessions, err = await _list_sessions_via_api(inst, timeout_s=10.0)
 
-        if active_sessions:
-            for sess in active_sessions:
+        if ok and api_sessions:
+            for raw in api_sessions:
+                if not isinstance(raw, dict):
+                    continue
+                sess = _parse_api_session(raw)
+                if not sess["session"]:
+                    continue
                 records.append(PresenceRecord(
                     gw=inst.name,
                     agent=sess["agent"],
                     session=sess["session"],
                     state="active",
-                    status=sess.get("status", "idle"),
+                    status=sess["status"],
                     model=sess["model"],
                     thinking=sess["thinking"],
                     context_tokens=sess["context_tokens"],
@@ -614,8 +468,8 @@ def build_local_presence_records(
                     updated_ts=int(time.time()),
                     ttl_sec=ttl,
                 ))
-        else:
-            # Fallback: synthetic record (backwards compat)
+        elif ok:
+            # API reachable but returned no sessions — emit idle record
             from hive_daemon.oc_bridge import OcBridge
             session_id = OcBridge._session_id_for_instance(inst)
             records.append(PresenceRecord(
@@ -624,6 +478,19 @@ def build_local_presence_records(
                 session=session_id,
                 state="active",
                 status="idle",
+                updated_ts=int(time.time()),
+                ttl_sec=ttl,
+            ))
+        else:
+            # API unavailable — emit explicit error record (no silent fallback)
+            from hive_daemon.oc_bridge import OcBridge
+            session_id = OcBridge._session_id_for_instance(inst)
+            records.append(PresenceRecord(
+                gw=inst.name,
+                agent=inst.agent_id or "main",
+                session=session_id,
+                state="error",
+                status=f"api_unavailable: {err}"[:200],
                 updated_ts=int(time.time()),
                 ttl_sec=ttl,
             ))
