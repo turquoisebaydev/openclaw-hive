@@ -9,6 +9,7 @@ description = "MQTT coordination daemon for OpenClaw clusters"
 requires-python = ">=3.11"
 dependencies = [
     "aiomqtt>=2.0",
+    "watchdog>=6.0,<7",
     "tomli>=2.0; python_version<'3.11'",
 ]
 

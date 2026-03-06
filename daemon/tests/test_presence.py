@@ -601,9 +601,6 @@ class TestListSessionsViaApi:
     async def test_uses_resolved_openclaw_cmd(self):
         inst = OcInstance(name="turq", openclaw_cmd="/opt/oc/bin/openclaw", profile="turq")
         with patch(
-            "hive_daemon.presence._agent_ids_for_profile",
-            return_value=["main"],
-        ), patch(
             "hive_daemon.presence._run_openclaw_json",
             new_callable=AsyncMock,
             return_value=(True, [], ""),
@@ -612,7 +609,7 @@ class TestListSessionsViaApi:
         mock_run.assert_called_once_with(
             openclaw_cmd="/opt/oc/bin/openclaw",
             profile="turq",
-            args=["sessions", "--agent", "main", "--json"],
+            args=["sessions", "--all-agents", "--json"],
             timeout_s=10.0,
         )
 

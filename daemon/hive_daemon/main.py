@@ -14,6 +14,13 @@ from pathlib import Path
 
 import aiomqtt
 
+try:
+    from watchdog.events import FileSystemEventHandler
+    from watchdog.observers import Observer
+except Exception:  # pragma: no cover - optional dependency
+    FileSystemEventHandler = None  # type: ignore[assignment]
+    Observer = None  # type: ignore[assignment]
+
 from hive_daemon.announcer import Announcer
 from hive_daemon.config import HiveConfig, load_config
 from hive_daemon.dispatcher import Dispatcher
@@ -27,6 +34,7 @@ from hive_daemon.presence import (
     presence_mqtt_topic,
 )
 from hive_daemon.router import Router
+from hive_daemon.probe import _config_path_for_profile
 
 log = logging.getLogger("hive_daemon")
 
@@ -478,33 +486,80 @@ async def run_daemon(config: HiveConfig) -> None:
                 # Presence publisher loop (deterministic, no LLM)
                 presence_task: asyncio.Task | None = None
                 if config.presence.enabled and presence_cache is not None:
+                    async def _publish_presence_once(last_topics: set[str]) -> set[str]:
+                        records = await build_local_presence_records(config)
+                        current_topics: set[str] = set()
+                        for rec in records:
+                            topic = presence_mqtt_topic(config.topic_prefix, rec)
+                            current_topics.add(topic)
+                            payload = json.dumps(rec.to_dict())
+                            await client.publish(topic, payload, retain=config.presence.retain)
+                            log.debug("published presence to %s", topic)
+
+                        if config.presence.retain:
+                            for stale_topic in sorted(last_topics - current_topics):
+                                await client.publish(stale_topic, "", retain=True)
+                                log.debug("cleared stale presence topic %s", stale_topic)
+
+                        if config.presence.discovery.prune_stale:
+                            presence_cache.prune()
+                        return current_topics
+
                     async def _presence_publish_loop() -> None:
                         last_topics: set[str] = set()
+
+                        # Always publish a startup snapshot.
+                        last_topics = await _publish_presence_once(last_topics)
+
+                        # Event-driven mode: watch OpenClaw runtime store files and
+                        # republish immediately on session updates (no periodic polling).
+                        if Observer is not None and FileSystemEventHandler is not None:
+                            roots = sorted({str(_config_path_for_profile(inst.profile).parent) for inst in config.oc_instances})
+                            if roots:
+                                log.info("presence watch mode enabled (roots=%s)", roots)
+                                loop = asyncio.get_running_loop()
+                                changed = asyncio.Event()
+
+                                class _SessionFileHandler(FileSystemEventHandler):
+                                    def _hit(self, path: str) -> None:
+                                        if path.endswith('/sessions/sessions.json') or path.endswith('/sessions.json'):
+                                            loop.call_soon_threadsafe(changed.set)
+
+                                    def on_created(self, event):
+                                        if not event.is_directory:
+                                            self._hit(event.src_path)
+
+                                    def on_modified(self, event):
+                                        if not event.is_directory:
+                                            self._hit(event.src_path)
+
+                                    def on_moved(self, event):
+                                        if not event.is_directory:
+                                            self._hit(event.dest_path)
+
+                                observer = Observer()
+                                handler = _SessionFileHandler()
+                                for root in roots:
+                                    observer.schedule(handler, root, recursive=True)
+                                observer.start()
+                                try:
+                                    while True:
+                                        await changed.wait()
+                                        changed.clear()
+                                        try:
+                                            last_topics = await _publish_presence_once(last_topics)
+                                        except aiomqtt.MqttError as exc:
+                                            log.error("presence publish failed: %s", exc)
+                                finally:
+                                    observer.stop()
+                                    observer.join(timeout=2.0)
+                                return
+
+                        # Fallback when filesystem watch support is unavailable.
+                        log.warning("presence watchdog unavailable; falling back to interval polling")
                         while True:
                             try:
-                                records = await build_local_presence_records(config)
-                                current_topics: set[str] = set()
-                                for rec in records:
-                                    topic = presence_mqtt_topic(config.topic_prefix, rec)
-                                    current_topics.add(topic)
-                                    payload = json.dumps(rec.to_dict())
-                                    await client.publish(
-                                        topic, payload,
-                                        retain=config.presence.retain,
-                                    )
-                                    log.debug("published presence to %s", topic)
-
-                                # Clear retained topics that are no longer present
-                                # in the runtime snapshot (prevents stale "lying around" data).
-                                if config.presence.retain:
-                                    for stale_topic in sorted(last_topics - current_topics):
-                                        await client.publish(stale_topic, "", retain=True)
-                                        log.debug("cleared stale presence topic %s", stale_topic)
-                                last_topics = current_topics
-
-                                # Prune stale remote entries
-                                if config.presence.discovery.prune_stale:
-                                    presence_cache.prune()
+                                last_topics = await _publish_presence_once(last_topics)
                             except aiomqtt.MqttError as exc:
                                 log.error("presence publish failed: %s", exc)
                             await asyncio.sleep(config.presence.interval_sec)
