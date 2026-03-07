@@ -26,9 +26,9 @@ log = logging.getLogger(__name__)
 # Agent turns involve LLM processing — allow generous timeout.
 DEFAULT_TIMEOUT = 300
 
-# Hint included in injected text for predictable, machine-readable replies.
-# Keep it short: it is paid every injection.
-_HIVE_REPLY_HINT = "Reply with plain text only (do not call hive-cli; the hive daemon will forward it)."
+# Optional hint injected into hive messages.
+# Disabled by default to avoid noisy chatter in channel-visible text.
+_HIVE_REPLY_HINT = ""
 
 # Env vars injected into openclaw subprocess for self-signed cert compat.
 _SUBPROCESS_ENV: dict[str, str] | None = None
@@ -94,7 +94,8 @@ class OcBridge:
         parts: list[str] = [meta]
         if prefix:
             parts.append(prefix)
-        parts.append(_HIVE_REPLY_HINT)
+        if _HIVE_REPLY_HINT:
+            parts.append(_HIVE_REPLY_HINT)
         parts.append(envelope.text)
 
         # Keep formatting simple + stable.

@@ -34,7 +34,6 @@ class TestFormatEventText:
         env = _make_envelope(from_="node-a", to="node-b", ch="command", text="hello world")
         text = OcBridge.format_event_text(env)
         assert text.startswith("[hive:node-a->node-b ch:command]\n")
-        assert "Reply with plain text only" in text
         assert "hello world" in text
 
     def test_with_prefix(self):
