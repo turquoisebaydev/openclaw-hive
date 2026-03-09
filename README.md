@@ -25,11 +25,14 @@ Hive solves these by putting a thin daemon on each box that handles coordination
   system event    hive-cli
        ↕              ↕
   [OpenClaw instance(s)]
+       ↕
+  [hive bridge plugin]       ← in-process runtime event tap (optional)
 ```
 
 - **Inbound to OC:** daemon → `openclaw system event` → LLM wakes with specific context
 - **Outbound from OC:** LLM → `hive-cli send` → daemon → MQTT
 - **Deterministic work:** daemon → `hive-daemon.d/` handler scripts → no LLM involved
+- **Real-time runtime telemetry (optional):** OpenClaw plugin observes runtime/observability events and publishes session/event deltas to Hive topics
 
 ## Components
 
@@ -37,6 +40,7 @@ Hive solves these by putting a thin daemon on each box that handles coordination
 |-----------|---------|
 | `daemon/` | Always-running sidecar — MQTT routing, heartbeats, handler dispatch |
 | `cli/` | Stateless CLI — send commands, check status, reply to requests |
+| `plugin/` | OpenClaw extension package(s) — in-process bridge for runtime observability and low-latency presence/event publication |
 | `skills/` | OpenClaw skills — teach the LLM how to participate in the hive |
 | `contrib/handlers/` | Example `hive-daemon.d/` scripts (git-sync, health-check, etc.) |
 | `contrib/shared-memory/` | Git-based cluster memory pattern for multi-gateway deployments |
