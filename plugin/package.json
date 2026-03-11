@@ -1,0 +1,21 @@
+{
+  "name": "@openclaw/hive-bridge",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "OpenClaw Hive runtime observability bridge",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "mqtt": "^5.13.3"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.1.29"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}

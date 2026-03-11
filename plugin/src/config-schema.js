@@ -1,0 +1,129 @@
+export const configSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    topicPrefix: {
+      type: "string",
+      minLength: 1,
+      default: "turq/hive",
+    },
+    mqtt: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        url: {
+          type: "string",
+          minLength: 1,
+        },
+        username: {
+          type: "string",
+        },
+        password: {
+          type: "string",
+        },
+        clientIdPrefix: {
+          type: "string",
+          default: "hive-bridge",
+        },
+        keepaliveSec: {
+          type: "integer",
+          minimum: 5,
+          maximum: 300,
+          default: 30,
+        },
+        connectTimeoutMs: {
+          type: "integer",
+          minimum: 1000,
+          maximum: 60000,
+          default: 5000,
+        },
+        qos: {
+          type: "integer",
+          enum: [0, 1, 2],
+          default: 1,
+        },
+        clean: {
+          type: "boolean",
+          default: true,
+        },
+      },
+      required: ["url"],
+    },
+    identity: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        gatewayId: {
+          type: "string",
+          minLength: 1,
+        },
+        agentId: {
+          type: "string",
+          minLength: 1,
+        },
+      },
+      required: ["gatewayId", "agentId"],
+    },
+    presence: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        enabled: {
+          type: "boolean",
+          default: true,
+        },
+        retain: {
+          type: "boolean",
+          default: true,
+        },
+        ttlSec: {
+          type: "integer",
+          minimum: 30,
+          maximum: 3600,
+          default: 300,
+        },
+        debounceMs: {
+          type: "integer",
+          minimum: 50,
+          maximum: 5000,
+          default: 750,
+        },
+        maxDelayMs: {
+          type: "integer",
+          minimum: 100,
+          maximum: 10000,
+          default: 5000,
+        },
+        publishTaskDetails: {
+          type: "boolean",
+          default: true,
+        },
+      },
+    },
+    events: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        enabled: {
+          type: "boolean",
+          default: true,
+        },
+        redact: {
+          type: "boolean",
+          default: true,
+        },
+        includeQueue: {
+          type: "boolean",
+          default: true,
+        },
+        summaryMaxLength: {
+          type: "integer",
+          minimum: 32,
+          maximum: 1000,
+          default: 160,
+        },
+      },
+    },
+  },
+  required: ["mqtt", "identity"],
+};
