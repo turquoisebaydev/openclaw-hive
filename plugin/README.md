@@ -23,7 +23,28 @@ OpenClaw extension package for the Hive runtime bridge.
 - `src/sanitizer.js` — redacted event/presence payload shaping
 - `src/publisher.js` — MQTT publish abstraction
 - `src/listener.js` — event subscription + debounce/coalescing bridge
-- `tests/` — focused unit tests for schema, reducer, publisher, and listener
+- `tests/` — focused unit tests for schema, reducer, publisher, listener, and sanitization
+
+## Runtime contract
+
+The bridge listens to OpenClaw observability domains described in
+`docs/tasks/2026-03-09-hive-bridge-claude-acp-context.md` and
+`docs/features/hive-plugin-bridge.md`:
+
+- `session`
+- `run`
+- `llm`
+- `tool`
+- `queue`
+
+From those events it emits two Hive data products:
+
+- retained presence snapshots on `turq/hive/presence/<gw>/<agent>/<session>`
+- non-retained runtime event summaries on `turq/hive/events/<gw>/<agent>/<session>`
+
+Presence payloads use the enriched `v: 2` schema and include live status, busy
+state, phase, model, token totals, context usage, compaction counts, optional
+channel/task metadata, and the latest redacted error summary.
 
 ## Config shape
 
@@ -48,10 +69,13 @@ Configure under `plugins.entries.hive-bridge.config`:
           presence: {
             ttlSec: 300,
             debounceMs: 750,
-            maxDelayMs: 5000
+            maxDelayMs: 5000,
+            publishTaskDetails: true
           },
           events: {
+            enabled: true,
             redact: true,
+            includeQueue: true,
             summaryMaxLength: 160
           }
         }
@@ -61,11 +85,17 @@ Configure under `plugins.entries.hive-bridge.config`:
 }
 ```
 
-## Notes
+## Rollout notes
 
-- MQTT publishes happen directly from the plugin for lower latency.
-- Presence snapshots are retained and published with MQTT expiry.
-- Event payloads are summary-only unless redaction is disabled explicitly.
+- Enable OpenClaw observability events before enabling the plugin.
+- Start with `events.redact = true` and only disable it for local debugging.
+- Use direct MQTT publish from the plugin for lower latency; keep daemon polling
+  as the periodic reconciler/fallback described in the feature brief.
+- Presence snapshots are retained and published with MQTT expiry via `ttlSec`.
+- Set `presence.publishTaskDetails = false` if session task/cwd/cmdline metadata
+  should be omitted entirely.
+- Event payloads stay summary-only by default; raw prompts/tool payloads are not
+  forwarded.
 
 ## Tests
 
