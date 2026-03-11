@@ -17,5 +17,13 @@
     "extensions": [
       "./index.js"
     ]
-  }
+  },
+  "main": "./index.js",
+  "exports": "./index.js",
+  "files": [
+    "index.js",
+    "openclaw.plugin.json",
+    "src/",
+    "README.md"
+  ]
 }
