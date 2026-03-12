@@ -41,8 +41,68 @@ function subscribeObservable(source, handler) {
   return undefined;
 }
 
+function normalizeAgentEvent(event) {
+  if (!event || typeof event !== "object") {
+    return undefined;
+  }
+
+  const data = event.data && typeof event.data === "object" ? event.data : {};
+  const phase = typeof data.phase === "string" ? data.phase.toLowerCase() : "";
+  const base = {
+    runId: typeof event.runId === "string" ? event.runId : undefined,
+    sessionKey: typeof event.sessionKey === "string" ? event.sessionKey : undefined,
+    ts: typeof event.ts === "number" ? event.ts : undefined,
+  };
+
+  if (event.stream === "lifecycle") {
+    return {
+      ...base,
+      domain: "run",
+      event: phase === "start" ? "started" : phase === "end" ? "completed" : phase || "update",
+      data,
+    };
+  }
+
+  if (event.stream === "tool") {
+    return {
+      ...base,
+      domain: "tool",
+      event: phase || "update",
+      data: {
+        ...data,
+        toolName: typeof data.name === "string" ? data.name : data.toolName,
+      },
+    };
+  }
+
+  if (event.stream === "error") {
+    return {
+      ...base,
+      domain: "run",
+      event: "error",
+      data,
+    };
+  }
+
+  return undefined;
+}
+
+function subscribeAgentEvents(source, handler) {
+  if (!source || typeof source.onAgentEvent !== "function") {
+    return undefined;
+  }
+
+  return source.onAgentEvent((event) => {
+    const normalized = normalizeAgentEvent(event);
+    if (normalized) {
+      handler(normalized);
+    }
+  });
+}
+
 export function subscribeToRuntimeEvents(api, handler) {
   const candidates = [
+    subscribeAgentEvents(api.runtime?.events, handler),
     subscribeObservable(api.runtime?.observability, handler),
     subscribeObservable(api.runtime?.events, handler),
     subscribeEmitter(api.runtime?.observability, ["event", "observability", "runtime_event"], handler),
@@ -122,6 +182,7 @@ export function createPresenceCoalescer({ publishPresence, debounceMs, maxDelayM
 export function createBridgeService({ api, config, logger, publisher, now = () => Date.now() }) {
   const log = logger ?? console;
   const sessions = new Map();
+  const outputsEnabled = config.events.enabled || config.presence.enabled;
   const coalescer = createPresenceCoalescer({
     publishPresence: (identity, payload) => publisher.publishPresence(identity, payload),
     debounceMs: config.presence.debounceMs,
@@ -133,6 +194,7 @@ export function createBridgeService({ api, config, logger, publisher, now = () =
 
   let unsubscribe = noop;
   let started = false;
+  let connected = false;
 
   async function handleEvent(event) {
     const identity = extractIdentity(event, config.identity);
@@ -177,18 +239,29 @@ export function createBridgeService({ api, config, logger, publisher, now = () =
       if (started) {
         return;
       }
-      await publisher.connect();
+
+      if (!outputsEnabled) {
+        started = true;
+        log.info?.("hive-bridge: bridge outputs disabled");
+        return;
+      }
+
       const stop = subscribeToRuntimeEvents(api, (event) => {
         void handleEvent(event).catch((error) => {
           log.error?.("hive-bridge: failed to process runtime event", error);
         });
       });
+
       if (!stop) {
         log.warn?.("hive-bridge: no runtime observability source found");
         unsubscribe = noop;
-      } else {
-        unsubscribe = stop;
+        started = true;
+        return;
       }
+
+      unsubscribe = stop;
+      await publisher.connect();
+      connected = true;
       started = true;
       log.info?.("hive-bridge: bridge service started");
     },
@@ -199,7 +272,10 @@ export function createBridgeService({ api, config, logger, publisher, now = () =
       unsubscribe();
       await coalescer.flushAll();
       coalescer.stop();
-      await publisher.disconnect();
+      if (connected) {
+        await publisher.disconnect();
+        connected = false;
+      }
       started = false;
       log.info?.("hive-bridge: bridge service stopped");
     },

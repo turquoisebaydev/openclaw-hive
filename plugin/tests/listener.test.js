@@ -133,3 +133,132 @@ test("bridge service reuses prior session state across multiple events", async (
   assert.equal(publishedPresence.at(-1).tokens.total, 125);
   assert.equal(publishedPresence.at(-1).tool.name, "shell");
 });
+
+test("bridge service skips MQTT connect when no runtime source exists", async () => {
+  const config = normalizeConfig({
+    mqtt: { url: "mqtt://localhost" },
+    identity: { gatewayId: "turq", agentId: "main" },
+  });
+
+  const calls = { connect: 0, disconnect: 0 };
+  const service = createBridgeService({
+    api: { logger: console },
+    config,
+    logger: console,
+    publisher: {
+      connect: async () => {
+        calls.connect += 1;
+      },
+      publishEvent: async () => {},
+      publishPresence: async () => {},
+      disconnect: async () => {
+        calls.disconnect += 1;
+      },
+    },
+  });
+
+  await service.start();
+  await service.stop();
+
+  assert.deepEqual(calls, { connect: 0, disconnect: 0 });
+});
+
+test("bridge service skips connect and subscription when outputs are disabled", async () => {
+  const runtime = new EventEmitter();
+  const config = normalizeConfig({
+    mqtt: { url: "mqtt://localhost" },
+    identity: { gatewayId: "turq", agentId: "main" },
+    presence: { enabled: false },
+    events: { enabled: false },
+  });
+
+  const calls = { connect: 0, publishEvent: 0, publishPresence: 0, disconnect: 0 };
+  const service = createBridgeService({
+    api: { runtime: { events: runtime }, logger: console },
+    config,
+    logger: console,
+    publisher: {
+      connect: async () => {
+        calls.connect += 1;
+      },
+      publishEvent: async () => {
+        calls.publishEvent += 1;
+      },
+      publishPresence: async () => {
+        calls.publishPresence += 1;
+      },
+      disconnect: async () => {
+        calls.disconnect += 1;
+      },
+    },
+  });
+
+  await service.start();
+  runtime.emit("event", {
+    domain: "llm",
+    event: "start",
+    sessionKey: "sess-disabled",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await service.stop();
+
+  assert.deepEqual(calls, { connect: 0, publishEvent: 0, publishPresence: 0, disconnect: 0 });
+});
+
+
+test("bridge service subscribes to runtime onAgentEvent hooks", async () => {
+  const publishedEvents = [];
+  const publishedPresence = [];
+  const config = normalizeConfig({
+    mqtt: { url: "mqtt://localhost" },
+    identity: { gatewayId: "mini1", agentId: "main" },
+    presence: { debounceMs: 1, maxDelayMs: 1 },
+  });
+
+  let onAgentEventHandler;
+  const service = createBridgeService({
+    api: {
+      runtime: {
+        events: {
+          onAgentEvent(handler) {
+            onAgentEventHandler = handler;
+            return () => {
+              onAgentEventHandler = undefined;
+            };
+          },
+        },
+      },
+      logger: console,
+    },
+    config,
+    logger: console,
+    publisher: {
+      connect: async () => {},
+      publishEvent: async (identity, payload) => publishedEvents.push({ identity, payload }),
+      publishPresence: async (identity, payload) => publishedPresence.push({ identity, payload }),
+      disconnect: async () => {},
+    },
+    now: () => 1700000000000,
+  });
+
+  await service.start();
+  onAgentEventHandler({
+    runId: "run-agent-1",
+    stream: "tool",
+    sessionKey: "agent:main:main",
+    ts: 1700000000000,
+    data: {
+      phase: "start",
+      name: "exec",
+    },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await service.stop();
+
+  assert.equal(publishedEvents.length, 1);
+  assert.equal(publishedEvents[0].identity.sessionId, "agent:main:main");
+  assert.equal(publishedEvents[0].payload.domain, "tool");
+  assert.equal(publishedEvents[0].payload.tool.name, "exec");
+  assert.equal(publishedPresence.at(-1).payload.tool.name, "exec");
+});

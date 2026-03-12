@@ -12,5 +12,6 @@ htmlcov/
 venv/
 .env
 *.log
+node_modules/
 hive.toml
 hive-daemon.d/

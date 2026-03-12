@@ -96,6 +96,8 @@ Configure under `plugins.entries.hive-bridge.config`:
   should be omitted entirely.
 - Event payloads stay summary-only by default; raw prompts/tool payloads are not
   forwarded.
+- The bridge stays idle if both outputs are disabled, and it skips MQTT connect if no
+  runtime observability source is available.
 
 ## Tests
 
