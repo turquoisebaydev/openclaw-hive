@@ -1,4 +1,5 @@
 import {
+  extractActivityType,
   extractChannel,
   extractCompactionCount,
   extractContext,
@@ -26,6 +27,7 @@ function createSessionState(identity, updatedMs) {
     status: "idle",
     busy: false,
     phase: "idle",
+    activityType: "gw",
     runId: undefined,
     model: "unknown",
     lastError: "",
@@ -200,6 +202,7 @@ export function reduceSessionEvent(previous, event, { identityFallback, nowMs, s
   const eventName = extractEventName(event);
   const phase = extractPhase(event);
   const errorSummary = extractErrorSummary(event);
+  const activityType = extractActivityType(event, identity);
   const runId = extractRunId(event);
   const model = extractModel(event);
   const tool = extractTool(event);
@@ -212,6 +215,9 @@ export function reduceSessionEvent(previous, event, { identityFallback, nowMs, s
 
   if (runId) {
     next.runId = runId;
+  }
+  if (activityType) {
+    next.activityType = activityType;
   }
   if (model) {
     next.model = model;
@@ -270,6 +276,7 @@ export function buildPresencePayload(sessionState, config) {
     status: sessionState.status,
     busy: sessionState.busy,
     phase: sessionState.phase,
+    activityType: sessionState.activityType,
     model: sessionState.model,
     tokens: {
       input: sessionState.tokens.input,

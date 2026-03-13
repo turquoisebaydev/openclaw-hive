@@ -25,8 +25,25 @@ test("sanitizeEvent redacts secrets from errors and task details", () => {
   }, config, config.identity, 1700000000000);
 
   assert.equal(payload.session, "sess-1");
+  assert.equal(payload.activityType, "gw");
   assert.match(payload.error, /Bearer \[redacted\]/i);
   assert.match(payload.task.summary, /api_key=\[redacted\]/i);
+});
+
+test("sanitizeEvent emits deterministic activityType for claude acp sessions", () => {
+  const config = normalizeConfig({
+    mqtt: { url: "mqtt://localhost" },
+    identity: { gatewayId: "turq", agentId: "main" },
+  });
+
+  const payload = sanitizeEvent({
+    domain: "run",
+    event: "started",
+    sessionKey: "agent:claude:acp:run-1",
+    agentId: "claude",
+  }, config, config.identity, 1700000000000);
+
+  assert.equal(payload.activityType, "claude");
 });
 
 test("presence payload omits task details when disabled and redacts errors", () => {

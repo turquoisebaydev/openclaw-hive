@@ -73,6 +73,56 @@ export function extractIdentity(event, fallbackIdentity) {
   };
 }
 
+export function extractActivityType(event, identity = undefined) {
+  const explicit = normalizeString(
+    pickFirst(event, [
+      "activityType",
+      "data.activityType",
+      "task.activityType",
+      "data.task.activityType",
+    ]),
+  ).toLowerCase();
+  if (explicit) {
+    return explicit;
+  }
+
+  const agentId = normalizeString(
+    pickFirst(event, ["agent", "agentId", "meta.agentId"]),
+    identity?.agentId,
+  ).toLowerCase();
+  const sessionId = normalizeString(
+    pickFirst(event, [
+      "session",
+      "sessionId",
+      "sessionKey",
+      "data.session",
+      "data.sessionId",
+      "data.sessionKey",
+      "meta.session",
+      "meta.sessionId",
+      "meta.sessionKey",
+    ]),
+    identity?.sessionId,
+  ).toLowerCase();
+
+  if (agentId.includes("codex") || sessionId.includes(":codex:") || sessionId.includes("codex")) {
+    return "codex";
+  }
+  if (agentId.includes("claude") || sessionId.includes(":claude:") || sessionId.includes("claude")) {
+    return "claude";
+  }
+  if (sessionId.includes(":acp:")) {
+    return "acp";
+  }
+  if (agentId.includes("local-llm")) {
+    return "local-llm";
+  }
+  if (agentId || sessionId) {
+    return "gw";
+  }
+  return undefined;
+}
+
 export function extractTimestampMs(event, nowMs) {
   const raw = pickFirst(event, ["ts", "timestamp", "time", "updatedTs"]);
   const numeric = normalizeNumber(raw);

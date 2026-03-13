@@ -47,7 +47,12 @@ is grouped by server (`pg`, `turq`, `turqette`) and nested under `gw/`.
 
 Presence payloads use the enriched `v: 2` schema and include live status, busy
 state, phase, model, token totals, context usage, compaction counts, optional
-channel/task metadata, and the latest redacted error summary.
+channel/task metadata, deterministic `activityType`, and the latest redacted
+error summary.
+
+`activityType` is inferred without model calls using explicit event fields first,
+then session/agent identity patterns (`codex`, `claude`, `acp`, `local-llm`,
+fallback `gw`).
 
 ## Config shape
 

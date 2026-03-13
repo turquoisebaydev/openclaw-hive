@@ -1,4 +1,5 @@
 import {
+  extractActivityType,
   extractChannel,
   extractContext,
   extractDomain,
@@ -54,6 +55,7 @@ export function sanitizeEvent(event, config, identityFallback, nowMs) {
     domain: extractDomain(event),
     event: extractEventName(event),
     phase: extractPhase(event) || undefined,
+    activityType: extractActivityType(event, identity) || "gw",
     updatedTs: Math.floor(extractTimestampMs(event, nowMs) / 1000),
   };
 

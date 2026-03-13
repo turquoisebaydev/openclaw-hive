@@ -91,8 +91,26 @@ test("presence payload includes enriched live state", () => {
   assert.equal(payload.session, "sess-2");
   assert.equal(payload.status, "running");
   assert.equal(payload.busy, true);
+  assert.equal(payload.activityType, "gw");
   assert.equal(payload.task.summary, "Debugging mqtt auth");
   assert.equal(payload.ttlSec, 300);
+});
+
+test("activityType is inferred deterministically from codex acp session identity", () => {
+  const state = reduceSessionEvent(undefined, {
+    domain: "run",
+    event: "started",
+    sessionKey: "agent:codex:acp:abc123",
+    agentId: "codex",
+    ts: 1700000000,
+  }, {
+    identityFallback: config.identity,
+    nowMs: 1700000000000,
+    summaryMaxLength: config.events.summaryMaxLength,
+  });
+
+  const payload = buildPresencePayload(state, config);
+  assert.equal(payload.activityType, "codex");
 });
 
 test("presence coalescer flush predicate triggers on lifecycle changes", () => {
