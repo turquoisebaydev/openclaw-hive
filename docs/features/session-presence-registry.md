@@ -44,10 +44,13 @@ Optional shorthand (CLI convenience):
 ## Presence Topics & Payload
 
 ### MQTT Topic
-`<topic_prefix>/presence/<gw>/<agent>/<session>`
+`<topic_prefix>/presence/<server>/gw/<gw>/<session>`
 
 Example:
-`turq/hive/presence/pg1/main/agent:dev:discord:channel:147...`
+`turq/hive/presence/pg/gw/pg1/agent:dev:discord:channel:147...`
+
+Logical cache identity remains `<gw>/<agent>/<session>` from the payload. The
+MQTT path is server-grouped for monitoring consumers.
 
 ### Payload
 ```json

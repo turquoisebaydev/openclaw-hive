@@ -543,4 +543,13 @@ async def build_local_presence_records(
 
 def presence_mqtt_topic(prefix: str, record: PresenceRecord) -> str:
     """Build the MQTT topic for a presence record."""
-    return f"{prefix}/presence/{record.gw}/{record.agent}/{record.session}"
+    gw = (record.gw or "").strip().lower()
+    if gw in {"turq", "mini1"}:
+        server = "turq"
+    elif gw.startswith("turqette"):
+        server = "turqette"
+    elif gw == "pg1" or gw.startswith("pg"):
+        server = "pg"
+    else:
+        server = gw or record.gw
+    return f"{prefix}/presence/{server}/gw/{record.gw}/{record.session}"

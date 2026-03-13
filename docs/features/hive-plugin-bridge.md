@@ -25,7 +25,11 @@ live visibility.
 
 Topic pattern:
 
-- `turq/hive/presence/<gw>/<agent>/<session>`
+- `turq/hive/presence/<server>/gw/<gateway>/<session>`
+
+The payload still carries logical identity as `gw`, `agent`, `session`. The MQTT
+path groups gateway-published records by physical server (`pg`, `turq`,
+`turqette`) and nests them under `gw/`.
 
 Suggested fields (v2):
 
@@ -44,7 +48,7 @@ Suggested fields (v2):
 
 Topic pattern:
 
-- `turq/hive/events/<gw>/<agent>/<session>`
+- `turq/hive/events/<server>/gw/<gateway>/<session>`
 
 Payload (sanitized) from OpenClaw observability event bus:
 

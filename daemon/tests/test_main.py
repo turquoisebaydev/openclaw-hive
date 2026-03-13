@@ -307,7 +307,7 @@ class TestPresenceHandling:
             "updatedTs": 1000,
             "ttlSec": 300,
         }
-        msg = _mqtt_msg("turq/hive/presence/pg1/main/sess-1", presence_payload)
+        msg = _mqtt_msg("turq/hive/presence/pg/gw/pg1/sess-1", presence_payload)
         await _handle_message(msg, cfg, router, presence_cache=cache)
 
         assert len(cache) == 1
@@ -335,7 +335,7 @@ class TestPresenceHandling:
             "updatedTs": 1000,
             "ttlSec": 300,
         }
-        msg = _mqtt_msg("turq/hive/presence/turq/main/sess-1", presence_payload)
+        msg = _mqtt_msg("turq/hive/presence/turq/gw/turq/sess-1", presence_payload)
         await _handle_message(msg, cfg, router, presence_cache=cache)
 
         assert len(cache) == 0
@@ -346,7 +346,7 @@ class TestPresenceHandling:
         router = Router()
         cache = PresenceCache()
 
-        msg = _mqtt_msg("turq/hive/presence/pg1/main/sess-1", {"kind": "wrong"})
+        msg = _mqtt_msg("turq/hive/presence/pg/gw/pg1/sess-1", {"kind": "wrong"})
         await _handle_message(msg, cfg, router, presence_cache=cache)
         assert len(cache) == 0
 
@@ -366,7 +366,7 @@ class TestPresenceHandling:
             "updatedTs": 1000,
             "ttlSec": 300,
         }
-        msg = _mqtt_msg("turq/hive/presence/pg1/main/sess-1", presence_payload)
+        msg = _mqtt_msg("turq/hive/presence/pg/gw/pg1/sess-1", presence_payload)
         # Should not raise — just ignored
         await _handle_message(msg, cfg, router, presence_cache=None)
 

@@ -39,8 +39,11 @@ The bridge listens to OpenClaw observability domains described in
 
 From those events it emits two Hive data products:
 
-- retained presence snapshots on `turq/hive/presence/<gw>/<agent>/<session>`
-- non-retained runtime event summaries on `turq/hive/events/<gw>/<agent>/<session>`
+- retained presence snapshots on `turq/hive/presence/<server>/gw/<gateway>/<session>`
+- non-retained runtime event summaries on `turq/hive/events/<server>/gw/<gateway>/<session>`
+
+Gateway identity inside the payload remains `gw/agent/session`; only the MQTT path
+is grouped by server (`pg`, `turq`, `turqette`) and nested under `gw/`.
 
 Presence payloads use the enriched `v: 2` schema and include live status, busy
 state, phase, model, token totals, context usage, compaction counts, optional
@@ -96,6 +99,8 @@ Configure under `plugins.entries.hive-bridge.config`:
   should be omitted entirely.
 - Event payloads stay summary-only by default; raw prompts/tool payloads are not
   forwarded.
+- Gateway bridge topics are grouped by physical server and publish to
+  `<topicPrefix>/{presence|events}/<server>/gw/<gateway>/<session>`.
 - The bridge stays idle if both outputs are disabled, and it skips MQTT connect if no
   runtime observability source is available.
 

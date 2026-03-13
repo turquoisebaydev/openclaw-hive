@@ -20,7 +20,7 @@ test("publisher maps presence and event topics with correct MQTT flags", async (
   const publishes = [];
   const config = normalizeConfig({
     mqtt: { url: "mqtt://localhost", qos: 1 },
-    identity: { gatewayId: "turq", agentId: "main" },
+    identity: { gatewayId: "mini1", agentId: "main" },
   });
   const publisher = createMqttPublisher({
     config,
@@ -28,18 +28,18 @@ test("publisher maps presence and event topics with correct MQTT flags", async (
   });
 
   await publisher.publishPresence(
-    { gatewayId: "turq", agentId: "main", sessionId: "sess/1" },
+    { gatewayId: "mini1", agentId: "main", sessionId: "sess/1" },
     { kind: "session_presence" },
   );
   await publisher.publishEvent(
-    { gatewayId: "turq", agentId: "main", sessionId: "sess/1" },
+    { gatewayId: "mini1", agentId: "main", sessionId: "sess/1" },
     { kind: "runtime_event" },
   );
 
-  assert.equal(publishes[0].topic, "turq/hive/presence/turq/main/sess%2F1");
+  assert.equal(publishes[0].topic, "turq/hive/presence/turq/gw/mini1/sess%2F1");
   assert.equal(publishes[0].options.retain, true);
   assert.equal(publishes[0].options.messageExpiryInterval, 300);
-  assert.equal(publishes[1].topic, "turq/hive/events/turq/main/sess%2F1");
+  assert.equal(publishes[1].topic, "turq/hive/events/turq/gw/mini1/sess%2F1");
   assert.equal(publishes[1].options.retain, false);
 
   await publisher.disconnect();

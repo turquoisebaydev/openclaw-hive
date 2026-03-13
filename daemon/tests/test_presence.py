@@ -919,8 +919,8 @@ class TestPresenceMqttTopic:
     def test_topic_format(self):
         r = _make_record(gw="pg1", agent="main", session="sess-1")
         topic = presence_mqtt_topic("turq/hive", r)
-        assert topic == "turq/hive/presence/pg1/main/sess-1"
+        assert topic == "turq/hive/presence/pg/gw/pg1/sess-1"
 
     def test_custom_prefix(self):
         r = _make_record(gw="x", agent="y", session="z")
-        assert presence_mqtt_topic("my/prefix", r) == "my/prefix/presence/x/y/z"
+        assert presence_mqtt_topic("my/prefix", r) == "my/prefix/presence/x/gw/x/z"
