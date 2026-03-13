@@ -94,6 +94,12 @@ export const configSchema = {
           maximum: 10000,
           default: 5000,
         },
+        snapshotRefreshSec: {
+          type: "integer",
+          minimum: 0,
+          maximum: 3600,
+          default: 60,
+        },
         publishTaskDetails: {
           type: "boolean",
           default: true,

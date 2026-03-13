@@ -1,10 +1,12 @@
 import {
   buildPresencePayload,
+  mergeSessionSnapshot,
   reduceSessionEvent,
   shouldFlushPresenceImmediately,
 } from "./reducer.js";
 import { extractIdentity } from "./extract.js";
 import { sanitizeEvent, sanitizePresencePayload } from "./sanitizer.js";
+import { readRuntimeSessionSnapshots, resolveSnapshotRefreshMs } from "./snapshot.js";
 import { sessionKey } from "./topic.js";
 
 function noop() {}
@@ -179,10 +181,18 @@ export function createPresenceCoalescer({ publishPresence, debounceMs, maxDelayM
   };
 }
 
-export function createBridgeService({ api, config, logger, publisher, now = () => Date.now() }) {
+export function createBridgeService({
+  api,
+  config,
+  logger,
+  publisher,
+  now = () => Date.now(),
+  readSnapshots = (params) => readRuntimeSessionSnapshots(params),
+}) {
   const log = logger ?? console;
   const sessions = new Map();
   const outputsEnabled = config.events.enabled || config.presence.enabled;
+  const snapshotRefreshMs = config.presence.enabled ? resolveSnapshotRefreshMs(config) : 0;
   const coalescer = createPresenceCoalescer({
     publishPresence: (identity, payload) => publisher.publishPresence(identity, payload),
     debounceMs: config.presence.debounceMs,
@@ -195,6 +205,16 @@ export function createBridgeService({ api, config, logger, publisher, now = () =
   let unsubscribe = noop;
   let started = false;
   let connected = false;
+  let snapshotTimer = undefined;
+
+  async function publishSessionState(previous, sessionState, immediate = false) {
+    const presencePayload = sanitizePresencePayload(buildPresencePayload(sessionState, config), config);
+    await coalescer.queue(
+      sessionState.identity,
+      presencePayload,
+      immediate || shouldFlushPresenceImmediately(previous, sessionState),
+    );
+  }
 
   async function handleEvent(event) {
     const identity = extractIdentity(event, config.identity);
@@ -222,15 +242,39 @@ export function createBridgeService({ api, config, logger, publisher, now = () =
     }
 
     if (config.presence.enabled) {
-      const presencePayload = sanitizePresencePayload(
-        buildPresencePayload(sessionState, config),
-        config,
-      );
-      await coalescer.queue(
-        sessionState.identity,
-        presencePayload,
-        shouldFlushPresenceImmediately(previous, sessionState),
-      );
+      await publishSessionState(previous, sessionState);
+    }
+  }
+
+  async function refreshSnapshots() {
+    if (!config.presence.enabled) {
+      return;
+    }
+
+    const snapshotNow = now();
+    const snapshots = await readSnapshots({
+      identityFallback: config.identity,
+      nowMs: snapshotNow,
+      logger: log,
+    });
+    const seenKeys = new Set();
+
+    for (const snapshot of snapshots) {
+      const key = sessionKey(snapshot.identity);
+      seenKeys.add(key);
+      const previous = sessions.get(key);
+      const sessionState = mergeSessionSnapshot(previous, snapshot);
+      if (!sessionState) {
+        continue;
+      }
+      sessions.set(key, sessionState);
+      await publishSessionState(previous, sessionState, true);
+    }
+
+    for (const [key, value] of sessions.entries()) {
+      if (value.identity.gatewayId === config.identity.gatewayId && !seenKeys.has(key)) {
+        sessions.delete(key);
+      }
     }
   }
 
@@ -252,16 +296,34 @@ export function createBridgeService({ api, config, logger, publisher, now = () =
         });
       });
 
-      if (!stop) {
-        log.warn?.("hive-bridge: no runtime observability source found");
+      const snapshotEnabled =
+        config.presence.enabled &&
+        typeof readSnapshots === "function" &&
+        snapshotRefreshMs > 0;
+      if (!stop && !snapshotEnabled) {
+        log.warn?.("hive-bridge: no runtime observability or snapshot source found");
         unsubscribe = noop;
         started = true;
         return;
       }
 
-      unsubscribe = stop;
+      unsubscribe = stop ?? noop;
       await publisher.connect();
       connected = true;
+
+      if (snapshotEnabled) {
+        await refreshSnapshots().catch((error) => {
+          log.warn?.("hive-bridge: initial snapshot refresh failed", error);
+        });
+        if (snapshotRefreshMs > 0) {
+          snapshotTimer = setInterval(() => {
+            void refreshSnapshots().catch((error) => {
+              log.warn?.("hive-bridge: snapshot refresh failed", error);
+            });
+          }, snapshotRefreshMs);
+        }
+      }
+
       started = true;
       log.info?.("hive-bridge: bridge service started");
     },
@@ -270,6 +332,10 @@ export function createBridgeService({ api, config, logger, publisher, now = () =
         return;
       }
       unsubscribe();
+      if (snapshotTimer) {
+        clearInterval(snapshotTimer);
+        snapshotTimer = undefined;
+      }
       await coalescer.flushAll();
       coalescer.stop();
       if (connected) {

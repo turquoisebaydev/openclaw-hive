@@ -73,6 +73,12 @@ export function normalizeConfig(rawConfig = {}) {
         100,
         10000,
       ),
+      snapshotRefreshSec: clampInteger(
+        rawPresence.snapshotRefreshSec,
+        DEFAULT_CONFIG.presence.snapshotRefreshSec,
+        0,
+        3600,
+      ),
       publishTaskDetails:
         rawPresence.publishTaskDetails ?? DEFAULT_CONFIG.presence.publishTaskDetails,
     },

@@ -23,6 +23,9 @@ function normalizeString(value, fallback = "") {
 }
 
 function normalizeNumber(value) {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : undefined;
 }
@@ -102,19 +105,22 @@ export function extractActivityType(event, identity = undefined) {
       "meta.sessionId",
       "meta.sessionKey",
     ]),
-    identity?.sessionId,
   ).toLowerCase();
 
-  if (agentId.includes("codex") || sessionId.includes(":codex:") || sessionId.includes("codex")) {
+  if (agentId.includes("codex") || sessionId.includes(":codex:") || sessionId.startsWith("codex:")) {
     return "codex";
   }
-  if (agentId.includes("claude") || sessionId.includes(":claude:") || sessionId.includes("claude")) {
+  if (agentId.includes("claude") || sessionId.includes(":claude:") || sessionId.startsWith("claude:")) {
     return "claude";
   }
-  if (sessionId.includes(":acp:")) {
+  if (agentId.includes("acp") || sessionId.includes(":acp:") || sessionId.startsWith("acp:")) {
     return "acp";
   }
-  if (agentId.includes("local-llm")) {
+  if (
+    agentId.includes("local") ||
+    sessionId.includes(":local-llm:") ||
+    sessionId.includes(":ollama:")
+  ) {
     return "local-llm";
   }
   if (agentId || sessionId) {
@@ -138,8 +144,26 @@ export function extractRunId(event) {
 }
 
 export function extractModel(event) {
-  const model = pickFirst(event, ["model", "data.model", "data.modelId", "meta.model"]);
+  const model = pickFirst(event, [
+    "model",
+    "modelId",
+    "data.model",
+    "data.modelId",
+    "meta.model",
+    "data.modelName",
+  ]);
   return model ? normalizeString(model) : undefined;
+}
+
+export function extractThinking(event) {
+  const thinking = pickFirst(event, [
+    "thinking",
+    "thinkingLevel",
+    "data.thinking",
+    "data.thinkingLevel",
+    "meta.thinking",
+  ]);
+  return thinking ? normalizeString(thinking).toLowerCase() : undefined;
 }
 
 export function extractTool(event) {
@@ -154,16 +178,30 @@ export function extractTool(event) {
 }
 
 export function extractTokenUsage(event) {
-  const usage = pickFirst(event, ["usage", "data.usage", "data.tokens"]);
+  const usage = pickFirst(event, ["usage", "data.usage", "data.tokens"]) ?? event;
   const input = normalizeNumber(
-    pickFirst(usage ?? {}, ["input", "inputTokens", "promptTokens", "prompt", "in"]),
+    pickFirst(usage ?? {}, [
+      "input",
+      "inputTokens",
+      "promptTokens",
+      "prompt",
+      "in",
+      "data.inputTokens",
+    ]),
   );
   const output = normalizeNumber(
-    pickFirst(usage ?? {}, ["output", "outputTokens", "completionTokens", "completion", "out"]),
+    pickFirst(usage ?? {}, [
+      "output",
+      "outputTokens",
+      "completionTokens",
+      "completion",
+      "out",
+      "data.outputTokens",
+    ]),
   );
-  const total = normalizeNumber(pickFirst(usage ?? {}, ["total", "totalTokens"]));
+  const total = normalizeNumber(pickFirst(usage ?? {}, ["total", "totalTokens", "data.totalTokens"]));
   const cache = normalizeNumber(
-    pickFirst(usage ?? {}, ["cache", "cacheTokens", "cachedTokens"]),
+    pickFirst(usage ?? {}, ["cache", "cacheTokens", "cachedTokens", "data.cacheTokens"]),
   );
 
   if ([input, output, total, cache].every((value) => value === undefined)) {
@@ -180,8 +218,29 @@ export function extractTokenUsage(event) {
 
 export function extractContext(event) {
   const context = pickFirst(event, ["context", "data.context"]);
-  const used = normalizeNumber(pickFirst(context ?? {}, ["used", "tokens", "current", "contextUsed"]));
-  const max = normalizeNumber(pickFirst(context ?? {}, ["max", "window", "limit", "contextWindow"]));
+  const used = normalizeNumber(
+    pickFirst(context ?? event ?? {}, [
+      "used",
+      "tokens",
+      "current",
+      "contextUsed",
+      "contextTokens",
+      "context_tokens",
+      "data.contextTokens",
+      "data.context_tokens",
+    ]),
+  );
+  const max = normalizeNumber(
+    pickFirst(context ?? event ?? {}, [
+      "max",
+      "window",
+      "limit",
+      "contextWindow",
+      "context_window",
+      "data.contextWindow",
+      "data.context_window",
+    ]),
+  );
   if (used === undefined && max === undefined) {
     return undefined;
   }
@@ -239,8 +298,8 @@ function truncateString(value, maxLength) {
 
 export function extractTaskSummary(event, maxLength = 160) {
   const task = pickFirst(event, ["task", "data.task"]);
-  const summary = normalizeString(pickFirst(task ?? event, ["summary", "data.summary", "activity"]));
-  const activity = normalizeString(pickFirst(task ?? event, ["activity", "data.activity"]));
+  const summary = normalizeString(pickFirst(task ?? event, ["summary", "title", "data.summary", "activity"]));
+  const activity = normalizeString(pickFirst(task ?? event, ["activity", "lastStatus", "data.activity"]));
   const cwd = normalizeString(pickFirst(task ?? event, ["cwd", "data.cwd"]));
   const cmdline = normalizeString(pickFirst(task ?? event, ["cmdline", "data.cmdline"]));
   const url = normalizeString(pickFirst(task ?? event, ["url", "data.url"]));

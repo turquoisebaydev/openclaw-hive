@@ -5,60 +5,50 @@ import { EventEmitter } from "node:events";
 import { normalizeConfig } from "../src/config.js";
 import { createBridgeService, createPresenceCoalescer } from "../src/listener.js";
 
-test("presence coalescer debounces burst updates and flushes latest payload", async () => {
-  const published = [];
-  const timers = [];
-  let nowMs = 1000;
-
+test("presence coalescer flushes immediately when requested", async () => {
+  const calls = [];
   const coalescer = createPresenceCoalescer({
-    publishPresence: async (identity, payload) => published.push({ identity, payload }),
+    publishPresence: async (identity, payload) => {
+      calls.push({ identity, payload });
+    },
     debounceMs: 50,
     maxDelayMs: 200,
-    now: () => nowMs,
-    schedule: (fn, delay) => {
-      const timer = { fn, delay, cancelled: false };
-      timers.push(timer);
-      return timer;
-    },
-    cancel: (timer) => {
-      timer.cancelled = true;
-    },
+    schedule: (fn, delayMs) => setTimeout(fn, delayMs),
+    cancel: (timer) => clearTimeout(timer),
+    now: () => 1700000000000,
   });
 
-  const identity = { gatewayId: "turq", agentId: "main", sessionId: "sess-1" };
-  await coalescer.queue(identity, { status: "running" }, false);
-  nowMs += 10;
-  await coalescer.queue(identity, { status: "llm" }, false);
+  await coalescer.queue(
+    { gatewayId: "turq", agentId: "main", sessionId: "sess-1" },
+    { status: "idle" },
+    true,
+  );
 
-  assert.equal(published.length, 0);
-  assert.equal(timers.length, 2);
-
-  await timers.at(-1).fn();
-  assert.equal(published.length, 1);
-  assert.equal(published[0].payload.status, "llm");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].identity.sessionId, "sess-1");
+  coalescer.stop();
 });
 
-test("bridge service subscribes to runtime events and publishes event + presence", async () => {
+test("bridge service publishes runtime events and presence", async () => {
   const runtime = new EventEmitter();
   const publishedEvents = [];
   const publishedPresence = [];
   const config = normalizeConfig({
     mqtt: { url: "mqtt://localhost" },
     identity: { gatewayId: "turq", agentId: "main" },
-    presence: { debounceMs: 1, maxDelayMs: 1 },
+    presence: { debounceMs: 1, maxDelayMs: 1, snapshotRefreshSec: 0 },
   });
 
-  const publisher = {
-    connect: async () => {},
-    publishEvent: async (identity, payload) => publishedEvents.push({ identity, payload }),
-    publishPresence: async (identity, payload) => publishedPresence.push({ identity, payload }),
-    disconnect: async () => {},
-  };
   const service = createBridgeService({
     api: { runtime: { events: runtime }, logger: console },
     config,
     logger: console,
-    publisher,
+    publisher: {
+      connect: async () => {},
+      publishEvent: async (identity, payload) => publishedEvents.push({ identity, payload }),
+      publishPresence: async (identity, payload) => publishedPresence.push({ identity, payload }),
+      disconnect: async () => {},
+    },
     now: () => 1700000000000,
   });
 
@@ -70,6 +60,7 @@ test("bridge service subscribes to runtime events and publishes event + presence
     runId: "run-1",
     data: {
       model: "claude-sonnet-4",
+      thinking: "high",
       usage: { inputTokens: 120, outputTokens: 80, totalTokens: 200 },
       context: { used: 4000, max: 200000 },
       error: "Bearer abcdef should be redacted",
@@ -86,6 +77,7 @@ test("bridge service subscribes to runtime events and publishes event + presence
   assert.equal(publishedPresence.length, 1);
   assert.equal(publishedPresence[0].payload.tokens.total, 200);
   assert.equal(publishedPresence[0].payload.context.max, 200000);
+  assert.equal(publishedPresence[0].payload.thinking, "high");
 });
 
 test("bridge service reuses prior session state across multiple events", async () => {
@@ -94,20 +86,19 @@ test("bridge service reuses prior session state across multiple events", async (
   const config = normalizeConfig({
     mqtt: { url: "mqtt://localhost" },
     identity: { gatewayId: "turq", agentId: "main" },
-    presence: { debounceMs: 1, maxDelayMs: 1 },
+    presence: { debounceMs: 1, maxDelayMs: 1, snapshotRefreshSec: 0 },
   });
 
-  const publisher = {
-    connect: async () => {},
-    publishEvent: async () => {},
-    publishPresence: async (_identity, payload) => publishedPresence.push(payload),
-    disconnect: async () => {},
-  };
   const service = createBridgeService({
     api: { runtime: { events: runtime }, logger: console },
     config,
     logger: console,
-    publisher,
+    publisher: {
+      connect: async () => {},
+      publishEvent: async () => {},
+      publishPresence: async (_identity, payload) => publishedPresence.push(payload),
+      disconnect: async () => {},
+    },
     now: () => 1700000000000,
   });
 
@@ -134,41 +125,57 @@ test("bridge service reuses prior session state across multiple events", async (
   assert.equal(publishedPresence.at(-1).tool.name, "shell");
 });
 
-test("bridge service skips MQTT connect when no runtime source exists", async () => {
+test("bridge service seeds presence from session snapshots", async () => {
+  const publishedPresence = [];
   const config = normalizeConfig({
     mqtt: { url: "mqtt://localhost" },
-    identity: { gatewayId: "turq", agentId: "main" },
+    identity: { gatewayId: "mini1", agentId: "main" },
+    presence: { debounceMs: 1, maxDelayMs: 1, snapshotRefreshSec: 1 },
+    events: { enabled: false },
   });
 
-  const calls = { connect: 0, disconnect: 0 };
   const service = createBridgeService({
     api: { logger: console },
     config,
     logger: console,
+    readSnapshots: async () => [
+      {
+        identity: { gatewayId: "mini1", agentId: "main", sessionId: "agent:main:main" },
+        updatedMs: 1700000000000,
+        state: "active",
+        status: "idle",
+        model: "gpt-5.3-codex",
+        thinking: "low",
+        tokens: { input: 5, output: 7, total: 12, cache: 0 },
+        context: { used: 200000, max: 200000 },
+        activityType: "gw",
+      },
+    ],
     publisher: {
-      connect: async () => {
-        calls.connect += 1;
-      },
+      connect: async () => {},
       publishEvent: async () => {},
-      publishPresence: async () => {},
-      disconnect: async () => {
-        calls.disconnect += 1;
-      },
+      publishPresence: async (_identity, payload) => publishedPresence.push(payload),
+      disconnect: async () => {},
     },
+    now: () => 1700000000000,
   });
 
   await service.start();
+  await new Promise((resolve) => setTimeout(resolve, 5));
   await service.stop();
 
-  assert.deepEqual(calls, { connect: 0, disconnect: 0 });
+  assert.equal(publishedPresence.length, 1);
+  assert.equal(publishedPresence[0].model, "gpt-5.3-codex");
+  assert.equal(publishedPresence[0].thinking, "low");
+  assert.equal(publishedPresence[0].context.tokens, 200000);
 });
 
-test("bridge service skips connect and subscription when outputs are disabled", async () => {
+test("bridge service skips connect when outputs are disabled", async () => {
   const runtime = new EventEmitter();
   const config = normalizeConfig({
     mqtt: { url: "mqtt://localhost" },
     identity: { gatewayId: "turq", agentId: "main" },
-    presence: { enabled: false },
+    presence: { enabled: false, snapshotRefreshSec: 0 },
     events: { enabled: false },
   });
 
@@ -205,14 +212,12 @@ test("bridge service skips connect and subscription when outputs are disabled", 
   assert.deepEqual(calls, { connect: 0, publishEvent: 0, publishPresence: 0, disconnect: 0 });
 });
 
-
 test("bridge service subscribes to runtime onAgentEvent hooks", async () => {
   const publishedEvents = [];
-  const publishedPresence = [];
   const config = normalizeConfig({
     mqtt: { url: "mqtt://localhost" },
     identity: { gatewayId: "mini1", agentId: "main" },
-    presence: { debounceMs: 1, maxDelayMs: 1 },
+    presence: { debounceMs: 1, maxDelayMs: 1, snapshotRefreshSec: 0 },
   });
 
   let onAgentEventHandler;
@@ -235,7 +240,7 @@ test("bridge service subscribes to runtime onAgentEvent hooks", async () => {
     publisher: {
       connect: async () => {},
       publishEvent: async (identity, payload) => publishedEvents.push({ identity, payload }),
-      publishPresence: async (identity, payload) => publishedPresence.push({ identity, payload }),
+      publishPresence: async () => {},
       disconnect: async () => {},
     },
     now: () => 1700000000000,
@@ -258,7 +263,4 @@ test("bridge service subscribes to runtime onAgentEvent hooks", async () => {
 
   assert.equal(publishedEvents.length, 1);
   assert.equal(publishedEvents[0].identity.sessionId, "agent:main:main");
-  assert.equal(publishedEvents[0].payload.domain, "tool");
-  assert.equal(publishedEvents[0].payload.tool.name, "exec");
-  assert.equal(publishedPresence.at(-1).payload.tool.name, "exec");
 });

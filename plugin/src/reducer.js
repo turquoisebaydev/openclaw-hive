@@ -12,6 +12,7 @@ import {
   extractQueue,
   extractRunId,
   extractTaskSummary,
+  extractThinking,
   extractTimestampMs,
   extractTokenUsage,
   extractTool,
@@ -30,6 +31,7 @@ function createSessionState(identity, updatedMs) {
     activityType: "gw",
     runId: undefined,
     model: "unknown",
+    thinking: "unknown",
     lastError: "",
     updatedMs,
     tokens: {
@@ -152,7 +154,7 @@ function applyLifecycle(next, domain, eventName, phase, hasError) {
       next.tool.state = "error";
       return;
     }
-    if (isOneOf(eventName, ["end", "ended", "completed", "finished", "succeeded"])) {
+    if (isOneOf(eventName, ["end", "ended", "completed", "finished", "succeeded", "result"])) {
       next.status = "running";
       next.busy = true;
       next.phase = "running";
@@ -184,6 +186,58 @@ function applyLifecycle(next, domain, eventName, phase, hasError) {
   }
 }
 
+function normalizeSnapshotStatus(status) {
+  const normalized = String(status ?? "idle").trim().toLowerCase() || "idle";
+  if (["executing", "active", "busy"].includes(normalized)) {
+    return "running";
+  }
+  if (["waiting"].includes(normalized)) {
+    return "queued";
+  }
+  return normalized;
+}
+
+function applySnapshotLifecycle(next, status, state) {
+  const normalizedStatus = normalizeSnapshotStatus(status);
+  const normalizedState = String(state ?? "active").trim().toLowerCase() || "active";
+
+  next.state = normalizedState;
+  next.status = normalizedStatus;
+
+  if (normalizedState === "closed") {
+    next.busy = false;
+    next.phase = "idle";
+    return;
+  }
+
+  if (normalizedStatus === "error") {
+    next.busy = false;
+    next.phase = "error";
+    return;
+  }
+
+  if (normalizedStatus === "stuck") {
+    next.busy = true;
+    next.phase = "stuck";
+    return;
+  }
+
+  if (normalizedStatus === "queued") {
+    next.busy = true;
+    next.phase = "queued";
+    return;
+  }
+
+  if (["llm", "tool", "running"].includes(normalizedStatus)) {
+    next.busy = true;
+    next.phase = normalizedStatus === "running" ? "running" : normalizedStatus;
+    return;
+  }
+
+  next.busy = false;
+  next.phase = "idle";
+}
+
 export function reduceSessionEvent(previous, event, { identityFallback, nowMs, summaryMaxLength }) {
   const identity = extractIdentity(event, identityFallback);
   if (!identity.sessionId) {
@@ -205,6 +259,7 @@ export function reduceSessionEvent(previous, event, { identityFallback, nowMs, s
   const activityType = extractActivityType(event, identity);
   const runId = extractRunId(event);
   const model = extractModel(event);
+  const thinking = extractThinking(event);
   const tool = extractTool(event);
   const usage = extractTokenUsage(event);
   const context = extractContext(event);
@@ -221,6 +276,9 @@ export function reduceSessionEvent(previous, event, { identityFallback, nowMs, s
   }
   if (model) {
     next.model = model;
+  }
+  if (thinking) {
+    next.thinking = thinking;
   }
   if (tool) {
     next.tool = {
@@ -265,6 +323,58 @@ export function reduceSessionEvent(previous, event, { identityFallback, nowMs, s
   return next;
 }
 
+export function mergeSessionSnapshot(previous, snapshot) {
+  if (!snapshot?.identity?.sessionId) {
+    return previous;
+  }
+
+  const next = {
+    ...(previous ?? createSessionState(snapshot.identity, snapshot.updatedMs ?? Date.now())),
+    identity: snapshot.identity,
+    key: sessionKey(snapshot.identity),
+    updatedMs: snapshot.updatedMs ?? previous?.updatedMs ?? Date.now(),
+  };
+
+  if (snapshot.activityType) {
+    next.activityType = snapshot.activityType;
+  }
+  if (snapshot.runId) {
+    next.runId = snapshot.runId;
+  }
+  if (snapshot.model) {
+    next.model = snapshot.model;
+  }
+  if (snapshot.thinking) {
+    next.thinking = snapshot.thinking;
+  }
+  if (snapshot.tokens) {
+    next.tokens = {
+      input: snapshot.tokens.input ?? next.tokens.input,
+      output: snapshot.tokens.output ?? next.tokens.output,
+      total: snapshot.tokens.total ?? next.tokens.total,
+      cache: snapshot.tokens.cache ?? next.tokens.cache,
+    };
+  }
+  if (snapshot.context) {
+    next.context = {
+      used: snapshot.context.used ?? next.context.used,
+      max: snapshot.context.max ?? next.context.max,
+    };
+  }
+  if (snapshot.channel) {
+    next.channel = snapshot.channel;
+  }
+  if (snapshot.task) {
+    next.task = snapshot.task;
+  }
+  if (snapshot.lastError) {
+    next.lastError = snapshot.lastError;
+  }
+
+  applySnapshotLifecycle(next, snapshot.status, snapshot.state);
+  return next;
+}
+
 export function buildPresencePayload(sessionState, config) {
   const payload = {
     v: PRESENCE_VERSION,
@@ -278,6 +388,7 @@ export function buildPresencePayload(sessionState, config) {
     phase: sessionState.phase,
     activityType: sessionState.activityType,
     model: sessionState.model,
+    thinking: sessionState.thinking,
     tokens: {
       input: sessionState.tokens.input,
       output: sessionState.tokens.output,
@@ -287,6 +398,8 @@ export function buildPresencePayload(sessionState, config) {
     context: {
       used: sessionState.context.used ?? "unknown",
       max: sessionState.context.max ?? "unknown",
+      tokens: sessionState.context.used ?? "unknown",
+      window: sessionState.context.max ?? "unknown",
     },
     compactions: {
       count: sessionState.compactions.count,

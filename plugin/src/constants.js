@@ -26,6 +26,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     ttlSec: 300,
     debounceMs: 750,
     maxDelayMs: 5000,
+    snapshotRefreshSec: 60,
     publishTaskDetails: true,
   }),
   events: Object.freeze({

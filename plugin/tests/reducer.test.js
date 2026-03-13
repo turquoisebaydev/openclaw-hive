@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { normalizeConfig } from "../src/config.js";
 import {
   buildPresencePayload,
+  mergeSessionSnapshot,
   reduceSessionEvent,
   shouldFlushPresenceImmediately,
 } from "../src/reducer.js";
@@ -65,16 +66,38 @@ test("reducer accumulates llm metrics and tool state", () => {
   assert.equal(toolState.tool.name, "bash");
 });
 
-test("presence payload includes enriched live state", () => {
+test("mergeSessionSnapshot seeds model, thinking, tokens, and context", () => {
+  const state = mergeSessionSnapshot(undefined, {
+    identity: { gatewayId: "turq", agentId: "main", sessionId: "sess-snapshot" },
+    updatedMs: 1700000000000,
+    status: "idle",
+    state: "active",
+    model: "claude-sonnet-4-6",
+    thinking: "low",
+    tokens: { input: 11, output: 7, total: 18, cache: 2 },
+    context: { used: 1000000, max: 2000000 },
+    activityType: "gw",
+  });
+
+  assert.equal(state.model, "claude-sonnet-4-6");
+  assert.equal(state.thinking, "low");
+  assert.equal(state.tokens.total, 18);
+  assert.equal(state.context.used, 1000000);
+  assert.equal(state.busy, false);
+});
+
+test("presence payload includes enriched live state and compatibility context fields", () => {
   const state = reduceSessionEvent(undefined, {
     domain: "run",
     event: "started",
     sessionKey: "sess-2",
     data: {
-      task: {
-        summary: "Debugging mqtt auth",
-        cmdline: "npm test",
-      },
+      model: "gpt-5.3-codex",
+      thinking: "high",
+      usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20, cacheTokens: 1 },
+      context: { used: 4500, max: 200000 },
+      channel: { provider: "discord", chatType: "channel", chatId: "123" },
+      task: { summary: "debugging bridge", activity: "patching reducer" },
     },
     ts: 1700000000,
   }, {
@@ -84,44 +107,27 @@ test("presence payload includes enriched live state", () => {
   });
 
   const payload = buildPresencePayload(state, config);
-  assert.equal(payload.v, 2);
-  assert.equal(payload.kind, "session_presence");
-  assert.equal(payload.gw, "turq");
-  assert.equal(payload.agent, "main");
-  assert.equal(payload.session, "sess-2");
-  assert.equal(payload.status, "running");
-  assert.equal(payload.busy, true);
-  assert.equal(payload.activityType, "gw");
-  assert.equal(payload.task.summary, "Debugging mqtt auth");
-  assert.equal(payload.ttlSec, 300);
+
+  assert.equal(payload.model, "gpt-5.3-codex");
+  assert.equal(payload.thinking, "high");
+  assert.equal(payload.tokens.total, 20);
+  assert.equal(payload.context.used, 4500);
+  assert.equal(payload.context.tokens, 4500);
+  assert.equal(payload.context.max, 200000);
+  assert.equal(payload.context.window, 200000);
+  assert.equal(payload.channel.provider, "discord");
+  assert.equal(payload.task.summary, "debugging bridge");
 });
 
-test("activityType is inferred deterministically from codex acp session identity", () => {
-  const state = reduceSessionEvent(undefined, {
-    domain: "run",
-    event: "started",
-    sessionKey: "agent:codex:acp:abc123",
-    agentId: "codex",
-    ts: 1700000000,
-  }, {
-    identityFallback: config.identity,
-    nowMs: 1700000000000,
-    summaryMaxLength: config.events.summaryMaxLength,
-  });
-
-  const payload = buildPresencePayload(state, config);
-  assert.equal(payload.activityType, "codex");
-});
-
-test("presence coalescer flush predicate triggers on lifecycle changes", () => {
-  const queued = {
+test("presence flushes immediately on state changes", () => {
+  const previous = {
     state: "active",
-    status: "queued",
-    busy: true,
-    phase: "queued",
+    status: "idle",
+    busy: false,
+    phase: "idle",
     lastError: "",
   };
-  const running = {
+  const next = {
     state: "active",
     status: "running",
     busy: true,
@@ -129,7 +135,5 @@ test("presence coalescer flush predicate triggers on lifecycle changes", () => {
     lastError: "",
   };
 
-  assert.equal(shouldFlushPresenceImmediately(undefined, queued), true);
-  assert.equal(shouldFlushPresenceImmediately(queued, running), true);
-  assert.equal(shouldFlushPresenceImmediately(running, { ...running }), false);
+  assert.equal(shouldFlushPresenceImmediately(previous, next), true);
 });

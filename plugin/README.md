@@ -78,6 +78,7 @@ Configure under `plugins.entries.hive-bridge.config`:
             ttlSec: 300,
             debounceMs: 750,
             maxDelayMs: 5000,
+            snapshotRefreshSec: 60,
             publishTaskDetails: true
           },
           events: {
@@ -100,6 +101,7 @@ Configure under `plugins.entries.hive-bridge.config`:
 - Use direct MQTT publish from the plugin for lower latency; keep daemon polling
   as the periodic reconciler/fallback described in the feature brief.
 - Presence snapshots are retained and published with MQTT expiry via `ttlSec`.
+- The bridge seeds v2 presence from `openclaw sessions --json` on startup and refreshes it on `snapshotRefreshSec`, so idle sessions still publish model/thinking/context fields.
 - Set `presence.publishTaskDetails = false` if session task/cwd/cmdline metadata
   should be omitted entirely.
 - Event payloads stay summary-only by default; raw prompts/tool payloads are not
