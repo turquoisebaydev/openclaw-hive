@@ -6,6 +6,8 @@ Draft (implementation-ready)
 ## Why
 Hive currently coordinates node-level messaging but lacks a cluster-wide, fresh registry of active gateway/agent/sessions. Operators need to target specific sessions reliably and receive deterministic failure responses when targets are stale/unavailable.
 
+For the next layer of deterministic command routing from human-facing chat context, see `docs/features/session-routing-metadata.md` (`SRM`).
+
 ## Goals
 1. Publish a cluster-wide list of active `gw/agent/session` identities.
 2. Include lightweight status + current task summary metadata.

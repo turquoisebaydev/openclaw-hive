@@ -188,7 +188,7 @@ class Announcer:
         """Announce an outbound send event. Non-fatal on failure."""
         if not self.send_enabled:
             return
-        if envelope.ch == "heartbeat":
+        if envelope.ch in ("heartbeat", "status", "presence"):
             return
         text = format_send(envelope, gw=self._node_id)
         await self._publish(text, envelope, event="send")
@@ -197,7 +197,7 @@ class Announcer:
         """Announce an inbound receive event. Non-fatal on failure."""
         if not self.recv_enabled:
             return
-        if envelope.ch == "heartbeat":
+        if envelope.ch in ("heartbeat", "status", "presence"):
             return
         text = format_recv(envelope, gw=self._node_id)
         await self._publish(text, envelope, event="recv")
