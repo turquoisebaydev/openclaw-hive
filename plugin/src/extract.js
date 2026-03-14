@@ -289,30 +289,68 @@ export function extractChannel(event) {
   return { provider, chatType, chatId };
 }
 
-function truncateString(value, maxLength) {
+function truncateTailString(value, maxLength) {
   if (value.length <= maxLength) {
     return value;
   }
-  return `${value.slice(0, Math.max(maxLength - 1, 1))}…`;
+  return `…${value.slice(-Math.max(maxLength - 1, 1))}`;
+}
+
+function normalizeTaskSummaryValue(value) {
+  const normalized = normalizeString(value);
+  return normalized || undefined;
+}
+
+function summarizeStructuredField(value) {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  return normalizeTaskSummaryValue(
+    pickFirst(value, [
+      "commandPreview",
+      "textPreview",
+      "pathPreview",
+      "preview",
+      "summary",
+      "text",
+      "value",
+      "title",
+      "name",
+    ]),
+  );
 }
 
 export function extractTaskSummary(event, maxLength = 160) {
   const task = pickFirst(event, ["task", "data.task"]);
-  const summary = normalizeString(pickFirst(task ?? event, ["summary", "title", "data.summary", "activity"]));
-  const activity = normalizeString(pickFirst(task ?? event, ["activity", "lastStatus", "data.activity"]));
-  const cwd = normalizeString(pickFirst(task ?? event, ["cwd", "data.cwd"]));
-  const cmdline = normalizeString(pickFirst(task ?? event, ["cmdline", "data.cmdline"]));
-  const url = normalizeString(pickFirst(task ?? event, ["url", "data.url"]));
+  const toolName = normalizeTaskSummaryValue(
+    pickFirst(event, ["data.toolName", "toolName", "data.name", "name"]),
+  );
+  const toolMeta = normalizeTaskSummaryValue(pickFirst(event, ["data.meta", "meta"]));
+  const argsSummary = pickFirst(event, ["data.argsSummary"]);
+  const resultSummary = pickFirst(event, ["data.resultSummary"]);
+  const derivedToolSummary =
+    summarizeStructuredField(argsSummary) ??
+    summarizeStructuredField(resultSummary) ??
+    (toolName && toolMeta ? `${toolName}: ${toolMeta}` : toolMeta ?? toolName);
+  const summary = normalizeTaskSummaryValue(
+    pickFirst(task ?? event, ["summary", "title", "data.summary", "activity"]),
+  ) ?? derivedToolSummary;
+  const activity =
+    normalizeTaskSummaryValue(pickFirst(task ?? event, ["activity", "lastStatus", "data.activity"])) ??
+    (toolName ? `tool:${toolName}` : undefined);
+  const cwd = normalizeTaskSummaryValue(pickFirst(task ?? event, ["cwd", "data.cwd"]));
+  const cmdline = normalizeTaskSummaryValue(pickFirst(task ?? event, ["cmdline", "data.cmdline"]));
+  const url = normalizeTaskSummaryValue(pickFirst(task ?? event, ["url", "data.url"]));
 
   if (!summary && !activity && !cwd && !cmdline && !url) {
     return undefined;
   }
 
   return {
-    summary: truncateString(summary, maxLength),
-    activity: truncateString(activity, maxLength),
-    cwd: truncateString(cwd, maxLength),
-    cmdline: truncateString(cmdline, maxLength),
-    url: truncateString(url, Math.max(maxLength * 2, maxLength)),
+    summary: summary ? truncateTailString(summary, maxLength) : undefined,
+    activity: activity ? truncateTailString(activity, maxLength) : undefined,
+    cwd: cwd ? truncateTailString(cwd, maxLength) : undefined,
+    cmdline: cmdline ? truncateTailString(cmdline, maxLength) : undefined,
+    url: url ? truncateTailString(url, Math.max(maxLength * 2, maxLength)) : undefined,
   };
 }

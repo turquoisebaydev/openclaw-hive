@@ -28,6 +28,14 @@ function subscribeEmitter(source, eventNames, handler) {
   };
 }
 
+function subscribeObservabilityEvents(source, handler) {
+  if (!source || typeof source.onObservabilityEvent !== "function") {
+    return undefined;
+  }
+
+  return source.onObservabilityEvent(handler);
+}
+
 function subscribeObservable(source, handler) {
   if (!source || typeof source.subscribe !== "function") {
     return undefined;
@@ -77,6 +85,16 @@ function normalizeAgentEvent(event) {
     };
   }
 
+  if (event.stream === "thinking" || event.stream === "assistant") {
+    return {
+      ...base,
+      domain: "llm",
+      event: event.stream,
+      phase: phase || "streaming",
+      data,
+    };
+  }
+
   if (event.stream === "error") {
     return {
       ...base,
@@ -105,6 +123,8 @@ function subscribeAgentEvents(source, handler) {
 export function subscribeToRuntimeEvents(api, handler) {
   const candidates = [
     subscribeAgentEvents(api.runtime?.events, handler),
+    subscribeObservabilityEvents(api.runtime?.observability, handler),
+    subscribeObservabilityEvents(api.observability, handler),
     subscribeObservable(api.runtime?.observability, handler),
     subscribeObservable(api.runtime?.events, handler),
     subscribeEmitter(api.runtime?.observability, ["event", "observability", "runtime_event"], handler),

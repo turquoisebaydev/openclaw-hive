@@ -137,3 +137,48 @@ test("presence flushes immediately on state changes", () => {
 
   assert.equal(shouldFlushPresenceImmediately(previous, next), true);
 });
+
+
+test("presence flushes immediately on task changes", () => {
+  const previous = {
+    state: "active",
+    status: "running",
+    busy: true,
+    phase: "running",
+    lastError: "",
+    task: { summary: "old task" },
+    tool: { name: "", phase: "idle", state: "idle" },
+  };
+  const next = {
+    state: "active",
+    status: "running",
+    busy: true,
+    phase: "running",
+    lastError: "",
+    task: { summary: "new task" },
+    tool: { name: "", phase: "idle", state: "idle" },
+  };
+
+  assert.equal(shouldFlushPresenceImmediately(previous, next), true);
+});
+
+test("reducer derives task summary from tool observability payloads", () => {
+  const state = reduceSessionEvent(undefined, {
+    domain: "tool",
+    event: "call",
+    phase: "start",
+    sessionKey: "sess-tool",
+    data: {
+      toolName: "exec",
+      meta: "pty",
+      argsSummary: { commandPreview: "run pnpm build in dashboard workspace" },
+    },
+  }, {
+    identityFallback: config.identity,
+    nowMs: 1700000000000,
+    summaryMaxLength: config.events.summaryMaxLength,
+  });
+
+  assert.equal(state.task.summary, "run pnpm build in dashboard workspace");
+  assert.equal(state.task.activity, "tool:exec");
+});

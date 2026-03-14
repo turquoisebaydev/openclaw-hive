@@ -440,6 +440,28 @@ export function buildPresencePayload(sessionState, config) {
   return payload;
 }
 
+function taskChanged(previous, next) {
+  const prevTask = previous?.task ?? {};
+  const nextTask = next?.task ?? {};
+  return (
+    prevTask.summary !== nextTask.summary ||
+    prevTask.activity !== nextTask.activity ||
+    prevTask.cwd !== nextTask.cwd ||
+    prevTask.cmdline !== nextTask.cmdline ||
+    prevTask.url !== nextTask.url
+  );
+}
+
+function toolChanged(previous, next) {
+  const prevTool = previous?.tool ?? {};
+  const nextTool = next?.tool ?? {};
+  return (
+    prevTool.name !== nextTool.name ||
+    prevTool.phase !== nextTool.phase ||
+    prevTool.state !== nextTool.state
+  );
+}
+
 export function shouldFlushPresenceImmediately(previous, next) {
   if (!previous) {
     return true;
@@ -450,6 +472,8 @@ export function shouldFlushPresenceImmediately(previous, next) {
     previous.status !== next.status ||
     previous.busy !== next.busy ||
     previous.phase !== next.phase ||
-    previous.lastError !== next.lastError
+    previous.lastError !== next.lastError ||
+    taskChanged(previous, next) ||
+    toolChanged(previous, next)
   );
 }

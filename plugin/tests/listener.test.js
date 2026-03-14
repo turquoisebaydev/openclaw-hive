@@ -264,3 +264,54 @@ test("bridge service subscribes to runtime onAgentEvent hooks", async () => {
   assert.equal(publishedEvents.length, 1);
   assert.equal(publishedEvents[0].identity.sessionId, "agent:main:main");
 });
+
+
+test("bridge service subscribes to runtime onObservabilityEvent hooks", async () => {
+  const publishedPresence = [];
+  const config = normalizeConfig({
+    mqtt: { url: "mqtt://localhost" },
+    identity: { gatewayId: "mini1", agentId: "main" },
+    presence: { debounceMs: 1, maxDelayMs: 1, snapshotRefreshSec: 0 },
+  });
+
+  let handler;
+  const service = createBridgeService({
+    api: {
+      runtime: {
+        observability: {
+          onObservabilityEvent(nextHandler) {
+            handler = nextHandler;
+            return () => {
+              handler = undefined;
+            };
+          },
+        },
+      },
+      logger: console,
+    },
+    config,
+    logger: console,
+    publisher: {
+      connect: async () => {},
+      publishEvent: async () => {},
+      publishPresence: async (_identity, payload) => publishedPresence.push(payload),
+      disconnect: async () => {},
+    },
+    now: () => 1700000000000,
+  });
+
+  await service.start();
+  handler?.({
+    domain: "llm",
+    event: "call",
+    phase: "start",
+    sessionKey: "sess-obs",
+    data: { task: { summary: "repair dashboard routing" } },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await service.stop();
+
+  assert.equal(publishedPresence.length, 1);
+  assert.equal(publishedPresence[0].task.summary, "repair dashboard routing");
+  assert.equal(publishedPresence[0].status, "llm");
+});
