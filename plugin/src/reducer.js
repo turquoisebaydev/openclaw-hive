@@ -190,7 +190,7 @@ function isGenericToolSummary(summary) {
   return typeof summary === "string" && /^[a-z0-9._-]+$/i.test(summary.trim());
 }
 
-function mergeTask(previousTask, nextTask, domain) {
+function mergeTask(previousTask, nextTask, domain, eventName) {
   if (!previousTask) {
     return nextTask;
   }
@@ -201,6 +201,17 @@ function mergeTask(previousTask, nextTask, domain) {
   };
   if (domain === "tool" && previousTask.cmdline && isGenericToolSummary(nextTask.summary)) {
     merged.summary = previousTask.summary;
+  }
+  if (
+    domain === "run" &&
+    previousTask.cmdline &&
+    ["completed", "finished", "succeeded", "done", "cancelled"].includes(eventName)
+  ) {
+    merged.summary = previousTask.summary;
+    merged.cmdline = previousTask.cmdline;
+    if (previousTask.url && !nextTask.url) {
+      merged.url = previousTask.url;
+    }
   }
   if (domain === "llm" && previousTask.cmdline && !nextTask.cmdline && !nextTask.url) {
     merged.summary = previousTask.summary;
@@ -339,7 +350,7 @@ export function reduceSessionEvent(previous, event, { identityFallback, nowMs, s
     next.channel = channel;
   }
   if (task) {
-    next.task = mergeTask(previous?.task, task, domain);
+    next.task = mergeTask(previous?.task, task, domain, eventName);
   }
   if (errorSummary) {
     next.lastError = errorSummary;

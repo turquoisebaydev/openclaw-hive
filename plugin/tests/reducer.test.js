@@ -311,3 +311,38 @@ test("tool updates keep the latest command detail across update/result/llm event
   assert.equal(llmState.task.summary, "exec: pwd");
   assert.equal(llmState.task.cmdline, "bash -lc 'pwd'");
 });
+
+
+test("run completion keeps the latest live command detail", () => {
+  const toolState = reduceSessionEvent(undefined, {
+    domain: "tool",
+    event: "result",
+    sessionKey: "sess-complete",
+    data: {
+      toolName: "exec",
+      meta: "pwd",
+      argsSummary: { command: "bash -lc 'pwd'" },
+      task: { summary: "Use bash to run pwd", activity: "direct", cwd: "/tmp/work" },
+    },
+  }, {
+    identityFallback: config.identity,
+    nowMs: 1700000000000,
+    summaryMaxLength: config.events.summaryMaxLength,
+  });
+
+  const completedState = reduceSessionEvent(toolState, {
+    domain: "run",
+    event: "completed",
+    sessionKey: "sess-complete",
+    data: {
+      task: { summary: "Use bash to run pwd", activity: "direct", cwd: "/tmp/work" },
+    },
+  }, {
+    identityFallback: config.identity,
+    nowMs: 1700000001000,
+    summaryMaxLength: config.events.summaryMaxLength,
+  });
+
+  assert.equal(completedState.task.summary, toolState.task.summary);
+  assert.equal(completedState.task.cmdline, toolState.task.cmdline);
+});
