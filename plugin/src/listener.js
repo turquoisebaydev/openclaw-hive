@@ -81,6 +81,20 @@ function normalizeAgentEvent(event) {
       data: {
         ...data,
         toolName: typeof data.name === "string" ? data.name : data.toolName,
+        argsSummary:
+          data.argsSummary && typeof data.argsSummary === "object"
+            ? data.argsSummary
+            : data.args && typeof data.args === "object"
+              ? data.args
+              : undefined,
+        resultSummary:
+          data.resultSummary && typeof data.resultSummary === "object"
+            ? data.resultSummary
+            : data.partialResult && typeof data.partialResult === "object"
+              ? data.partialResult
+              : data.result && typeof data.result === "object"
+                ? data.result
+                : undefined,
       },
     };
   }

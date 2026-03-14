@@ -318,6 +318,10 @@ function summarizeStructuredField(value) {
   return normalizeTaskSummaryValue(
     pickFirst(value, [
       "commandPreview",
+      "displayCommand",
+      "detail",
+      "command",
+      "cmd",
       "textPreview",
       "pathPreview",
       "preview",

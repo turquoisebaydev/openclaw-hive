@@ -220,3 +220,23 @@ test("llm events preserve latest live tool summary after a tool step", () => {
   assert.equal(llmState.task.summary, "pwd");
   assert.equal(llmState.task.cmdline, "pwd");
 });
+
+
+test("reducer derives live tool summary from raw tool args when observability summaries are unavailable", () => {
+  const state = reduceSessionEvent(undefined, {
+    domain: "tool",
+    event: "start",
+    sessionKey: "sess-raw-tool",
+    data: {
+      toolName: "exec",
+      argsSummary: { command: "pwd" },
+    },
+  }, {
+    identityFallback: config.identity,
+    nowMs: 1700000000000,
+    summaryMaxLength: config.events.summaryMaxLength,
+  });
+
+  assert.equal(state.task.summary, "pwd");
+  assert.equal(state.task.cmdline, "pwd");
+});
