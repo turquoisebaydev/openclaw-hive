@@ -186,6 +186,24 @@ function applyLifecycle(next, domain, eventName, phase, hasError) {
   }
 }
 
+function mergeTask(previousTask, nextTask, domain) {
+  if (!previousTask) {
+    return nextTask;
+  }
+  const merged = {
+    ...previousTask,
+    ...nextTask,
+  };
+  if (domain === "llm" && previousTask.cmdline && !nextTask.cmdline && !nextTask.url) {
+    merged.summary = previousTask.summary;
+    merged.cmdline = previousTask.cmdline;
+    if (previousTask.url && !nextTask.url) {
+      merged.url = previousTask.url;
+    }
+  }
+  return merged;
+}
+
 function normalizeSnapshotStatus(status) {
   const normalized = String(status ?? "idle").trim().toLowerCase() || "idle";
   if (["executing", "active", "busy"].includes(normalized)) {
@@ -313,7 +331,7 @@ export function reduceSessionEvent(previous, event, { identityFallback, nowMs, s
     next.channel = channel;
   }
   if (task) {
-    next.task = task;
+    next.task = mergeTask(previous?.task, task, domain);
   }
   if (errorSummary) {
     next.lastError = errorSummary;

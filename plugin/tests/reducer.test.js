@@ -182,3 +182,41 @@ test("reducer derives task summary from tool observability payloads", () => {
   assert.equal(state.task.summary, "run pnpm build in dashboard workspace");
   assert.equal(state.task.activity, "tool:exec");
 });
+
+
+test("llm events preserve latest live tool summary after a tool step", () => {
+  const toolState = reduceSessionEvent(undefined, {
+    domain: "tool",
+    event: "call",
+    phase: "start",
+    sessionKey: "sess-live",
+    data: {
+      toolName: "exec",
+      argsSummary: { commandPreview: "pwd" },
+      task: { summary: "Use bash to run pwd", activity: "direct", cwd: "/tmp/work" },
+    },
+  }, {
+    identityFallback: config.identity,
+    nowMs: 1700000000000,
+    summaryMaxLength: config.events.summaryMaxLength,
+  });
+
+  const llmState = reduceSessionEvent(toolState, {
+    domain: "llm",
+    event: "assistant",
+    phase: "streaming",
+    sessionKey: "sess-live",
+    data: {
+      task: { summary: "Use bash to run pwd", activity: "direct", cwd: "/tmp/work" },
+    },
+  }, {
+    identityFallback: config.identity,
+    nowMs: 1700000001000,
+    summaryMaxLength: config.events.summaryMaxLength,
+  });
+
+  assert.equal(toolState.task.summary, "pwd");
+  assert.equal(toolState.task.cmdline, "pwd");
+  assert.equal(llmState.task.summary, "pwd");
+  assert.equal(llmState.task.cmdline, "pwd");
+});

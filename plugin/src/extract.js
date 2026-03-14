@@ -297,8 +297,18 @@ function truncateTailString(value, maxLength) {
 }
 
 function normalizeTaskSummaryValue(value) {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
   const normalized = normalizeString(value);
-  return normalized || undefined;
+  if (!normalized) {
+    return undefined;
+  }
+  const lowered = normalized.toLowerCase();
+  if (lowered === "undefined" || lowered === "null") {
+    return undefined;
+  }
+  return normalized;
 }
 
 function summarizeStructuredField(value) {
@@ -321,6 +331,7 @@ function summarizeStructuredField(value) {
 }
 
 export function extractTaskSummary(event, maxLength = 160) {
+  const domain = normalizeTaskSummaryValue(pickFirst(event, ["domain", "type"]))?.toLowerCase();
   const task = pickFirst(event, ["task", "data.task"]);
   const toolName = normalizeTaskSummaryValue(
     pickFirst(event, ["data.toolName", "toolName", "data.name", "name"]),
@@ -332,14 +343,22 @@ export function extractTaskSummary(event, maxLength = 160) {
     summarizeStructuredField(argsSummary) ??
     summarizeStructuredField(resultSummary) ??
     (toolName && toolMeta ? `${toolName}: ${toolMeta}` : toolMeta ?? toolName);
-  const summary = normalizeTaskSummaryValue(
+  const explicitSummary = normalizeTaskSummaryValue(
     pickFirst(task ?? event, ["summary", "title", "data.summary", "activity"]),
-  ) ?? derivedToolSummary;
+  );
+  const summary =
+    domain === "tool"
+      ? derivedToolSummary ?? explicitSummary
+      : domain === "llm"
+        ? derivedToolSummary ?? explicitSummary
+        : explicitSummary ?? derivedToolSummary;
   const activity =
     normalizeTaskSummaryValue(pickFirst(task ?? event, ["activity", "lastStatus", "data.activity"])) ??
     (toolName ? `tool:${toolName}` : undefined);
   const cwd = normalizeTaskSummaryValue(pickFirst(task ?? event, ["cwd", "data.cwd"]));
-  const cmdline = normalizeTaskSummaryValue(pickFirst(task ?? event, ["cmdline", "data.cmdline"]));
+  const cmdline =
+    normalizeTaskSummaryValue(pickFirst(task ?? event, ["cmdline", "data.cmdline"])) ??
+    summarizeStructuredField(argsSummary);
   const url = normalizeTaskSummaryValue(pickFirst(task ?? event, ["url", "data.url"]));
 
   if (!summary && !activity && !cwd && !cmdline && !url) {
