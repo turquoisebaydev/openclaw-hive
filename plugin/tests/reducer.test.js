@@ -240,3 +240,74 @@ test("reducer derives live tool summary from raw tool args when observability su
   assert.equal(state.task.summary, "pwd");
   assert.equal(state.task.cmdline, "pwd");
 });
+
+
+test("tool updates keep the latest command detail across update/result/llm events", () => {
+  const startState = reduceSessionEvent(undefined, {
+    domain: "tool",
+    event: "start",
+    sessionKey: "sess-step",
+    data: {
+      toolName: "exec",
+      argsSummary: { command: "bash -lc 'pwd'" },
+      task: { summary: "Use bash to run pwd", activity: "direct", cwd: "/tmp/work" },
+    },
+  }, {
+    identityFallback: config.identity,
+    nowMs: 1700000000000,
+    summaryMaxLength: config.events.summaryMaxLength,
+  });
+
+  const updateState = reduceSessionEvent(startState, {
+    domain: "tool",
+    event: "update",
+    sessionKey: "sess-step",
+    data: {
+      toolName: "exec",
+      resultSummary: { name: "exec" },
+      task: { summary: "Use bash to run pwd", activity: "direct", cwd: "/tmp/work" },
+    },
+  }, {
+    identityFallback: config.identity,
+    nowMs: 1700000001000,
+    summaryMaxLength: config.events.summaryMaxLength,
+  });
+
+  const resultState = reduceSessionEvent(updateState, {
+    domain: "tool",
+    event: "result",
+    sessionKey: "sess-step",
+    data: {
+      toolName: "exec",
+      meta: "pwd",
+      task: { summary: "Use bash to run pwd", activity: "direct", cwd: "/tmp/work" },
+    },
+  }, {
+    identityFallback: config.identity,
+    nowMs: 1700000001500,
+    summaryMaxLength: config.events.summaryMaxLength,
+  });
+
+  const llmState = reduceSessionEvent(resultState, {
+    domain: "llm",
+    event: "assistant",
+    phase: "streaming",
+    sessionKey: "sess-step",
+    data: {
+      task: { summary: "Use bash to run pwd", activity: "direct", cwd: "/tmp/work" },
+    },
+  }, {
+    identityFallback: config.identity,
+    nowMs: 1700000002000,
+    summaryMaxLength: config.events.summaryMaxLength,
+  });
+
+  assert.equal(startState.task.summary, "bash -lc 'pwd'");
+  assert.equal(startState.task.cmdline, "bash -lc 'pwd'");
+  assert.equal(updateState.task.summary, "bash -lc 'pwd'");
+  assert.equal(updateState.task.cmdline, "bash -lc 'pwd'");
+  assert.equal(resultState.task.summary, "exec: pwd");
+  assert.equal(resultState.task.cmdline, "bash -lc 'pwd'");
+  assert.equal(llmState.task.summary, "exec: pwd");
+  assert.equal(llmState.task.cmdline, "bash -lc 'pwd'");
+});

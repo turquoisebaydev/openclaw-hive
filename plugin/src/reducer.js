@@ -186,14 +186,22 @@ function applyLifecycle(next, domain, eventName, phase, hasError) {
   }
 }
 
+function isGenericToolSummary(summary) {
+  return typeof summary === "string" && /^[a-z0-9._-]+$/i.test(summary.trim());
+}
+
 function mergeTask(previousTask, nextTask, domain) {
   if (!previousTask) {
     return nextTask;
   }
+  const nextDefinedEntries = Object.entries(nextTask).filter(([, value]) => value !== undefined);
   const merged = {
     ...previousTask,
-    ...nextTask,
+    ...Object.fromEntries(nextDefinedEntries),
   };
+  if (domain === "tool" && previousTask.cmdline && isGenericToolSummary(nextTask.summary)) {
+    merged.summary = previousTask.summary;
+  }
   if (domain === "llm" && previousTask.cmdline && !nextTask.cmdline && !nextTask.url) {
     merged.summary = previousTask.summary;
     merged.cmdline = previousTask.cmdline;
