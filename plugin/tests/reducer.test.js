@@ -183,6 +183,32 @@ test("reducer derives task summary from tool observability payloads", () => {
   assert.equal(state.task.activity, "tool:exec");
 });
 
+test("reducer strips leading env-var prefixes from raw command when commandPreview is absent", () => {
+  // Simulates a core that doesn't produce commandPreview — the raw command may
+  // carry env-var assignments that the plugin should strip for clean monitoring display.
+  const state = reduceSessionEvent(undefined, {
+    domain: "tool",
+    event: "call",
+    phase: "start",
+    sessionKey: "sess-env-strip",
+    data: {
+      toolName: "exec",
+      argsSummary: {
+        kind: "object",
+        command: 'OPENCLAW_PROFILE=mini1 OPENCLAW_STATE_DIR=/tmp/state bash -lc "git status --short"',
+      },
+    },
+  }, {
+    identityFallback: config.identity,
+    nowMs: 1700000000000,
+    summaryMaxLength: config.events.summaryMaxLength,
+  });
+
+  // Summary should not expose internal env vars
+  assert.ok(!state.task.summary.startsWith("OPENCLAW_"), "should not start with env var");
+  assert.ok(state.task.summary.includes("bash"), "should include the command after env vars");
+});
+
 
 test("llm events preserve latest live tool summary after a tool step", () => {
   const toolState = reduceSessionEvent(undefined, {

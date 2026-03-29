@@ -311,11 +311,22 @@ function normalizeTaskSummaryValue(value) {
   return normalized;
 }
 
+// Matches one or more leading KEY=VALUE assignments (e.g. "OPENCLAW_PROFILE=mini1 FOO=bar cmd")
+const LEADING_ENV_VARS_RE = /^(?:[A-Z_][A-Z0-9_]*=[^\s]* +)+/;
+
+function stripLeadingEnvVars(value) {
+  if (typeof value !== "string") {
+    return value;
+  }
+  const stripped = value.replace(LEADING_ENV_VARS_RE, "").trim();
+  return stripped || value;
+}
+
 function summarizeStructuredField(value) {
   if (!value || typeof value !== "object") {
     return undefined;
   }
-  return normalizeTaskSummaryValue(
+  const raw = normalizeTaskSummaryValue(
     pickFirst(value, [
       "commandPreview",
       "displayCommand",
@@ -332,6 +343,10 @@ function summarizeStructuredField(value) {
       "name",
     ]),
   );
+  // Strip leading env-var assignments from command-like fields so monitoring
+  // shows "git status" rather than "OPENCLAW_PROFILE=mini1 … bash -lc git status"
+  // when core hasn't generated a commandPreview.
+  return raw ? stripLeadingEnvVars(raw) : undefined;
 }
 
 export function extractTaskSummary(event, maxLength = 160) {
