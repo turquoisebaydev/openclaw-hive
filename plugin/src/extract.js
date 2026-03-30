@@ -313,6 +313,7 @@ function normalizeTaskSummaryValue(value) {
 
 // Matches one or more leading KEY=VALUE assignments (e.g. "OPENCLAW_PROFILE=mini1 FOO=bar cmd")
 const LEADING_ENV_VARS_RE = /^(?:[A-Z_][A-Z0-9_]*=[^\s]* +)+/;
+const SHELL_WRAPPER_RE = /^(?:\/bin\/)?(?:bash|sh|zsh|dash|fish)\s+-[A-Za-z-]*c\s+([\s\S]+)$/i;
 
 function stripLeadingEnvVars(value) {
   if (typeof value !== "string") {
@@ -322,17 +323,67 @@ function stripLeadingEnvVars(value) {
   return stripped || value;
 }
 
-function summarizeStructuredField(value) {
+function stripMatchingQuotes(value) {
+  if (typeof value !== "string" || value.length < 2) {
+    return value;
+  }
+  const quote = value[0];
+  if ((quote !== "'" && quote !== '"') || value.at(-1) !== quote) {
+    return value;
+  }
+  const inner = value.slice(1, -1).trim();
+  return inner || value;
+}
+
+function unwrapShellWrapper(value) {
+  if (typeof value !== "string") {
+    return value;
+  }
+  const match = value.trim().match(SHELL_WRAPPER_RE);
+  if (!match) {
+    return value;
+  }
+  const inner = stripMatchingQuotes(match[1]?.trim());
+  return inner || value;
+}
+
+function pickStructuredField(value, paths) {
   if (!value || typeof value !== "object") {
     return undefined;
   }
-  const raw = normalizeTaskSummaryValue(
-    pickFirst(value, [
-      "commandPreview",
-      "displayCommand",
-      "detail",
+  return normalizeTaskSummaryValue(pickFirst(value, paths));
+}
+
+function summarizeStructuredField(value) {
+  const raw = pickStructuredField(value, [
+    "commandPreview",
+    "displayCommand",
+    "detail",
+    "command",
+    "cmd",
+    "textPreview",
+    "pathPreview",
+    "preview",
+    "summary",
+    "text",
+    "value",
+    "title",
+    "name",
+  ]);
+  // Strip leading env-var assignments from command-like fields so monitoring
+  // shows "git status" rather than "OPENCLAW_PROFILE=mini1 … bash -lc git status"
+  // when core hasn't generated a commandPreview.
+  return raw ? unwrapShellWrapper(stripLeadingEnvVars(raw)) : undefined;
+}
+
+function extractStructuredDetail(value) {
+  return (
+    pickStructuredField(value, [
       "command",
       "cmd",
+      "displayCommand",
+      "detail",
+      "commandPreview",
       "textPreview",
       "pathPreview",
       "preview",
@@ -341,12 +392,8 @@ function summarizeStructuredField(value) {
       "value",
       "title",
       "name",
-    ]),
+    ]) ?? summarizeStructuredField(value)
   );
-  // Strip leading env-var assignments from command-like fields so monitoring
-  // shows "git status" rather than "OPENCLAW_PROFILE=mini1 … bash -lc git status"
-  // when core hasn't generated a commandPreview.
-  return raw ? stripLeadingEnvVars(raw) : undefined;
 }
 
 export function extractTaskSummary(event, maxLength = 160) {
@@ -377,7 +424,7 @@ export function extractTaskSummary(event, maxLength = 160) {
   const cwd = normalizeTaskSummaryValue(pickFirst(task ?? event, ["cwd", "data.cwd"]));
   const cmdline =
     normalizeTaskSummaryValue(pickFirst(task ?? event, ["cmdline", "data.cmdline"])) ??
-    summarizeStructuredField(argsSummary);
+    extractStructuredDetail(argsSummary);
   const url = normalizeTaskSummaryValue(pickFirst(task ?? event, ["url", "data.url"]));
 
   if (!summary && !activity && !cwd && !cmdline && !url) {

@@ -204,9 +204,11 @@ test("reducer strips leading env-var prefixes from raw command when commandPrevi
     summaryMaxLength: config.events.summaryMaxLength,
   });
 
-  // Summary should not expose internal env vars
-  assert.ok(!state.task.summary.startsWith("OPENCLAW_"), "should not start with env var");
-  assert.ok(state.task.summary.includes("bash"), "should include the command after env vars");
+  assert.equal(state.task.summary, "git status --short");
+  assert.equal(
+    state.task.cmdline,
+    'OPENCLAW_PROFILE=mini1 OPENCLAW_STATE_DIR=/tmp/state bash -lc "git status --short"',
+  );
 });
 
 
@@ -328,9 +330,9 @@ test("tool updates keep the latest command detail across update/result/llm event
     summaryMaxLength: config.events.summaryMaxLength,
   });
 
-  assert.equal(startState.task.summary, "bash -lc 'pwd'");
+  assert.equal(startState.task.summary, "pwd");
   assert.equal(startState.task.cmdline, "bash -lc 'pwd'");
-  assert.equal(updateState.task.summary, "bash -lc 'pwd'");
+  assert.equal(updateState.task.summary, "pwd");
   assert.equal(updateState.task.cmdline, "bash -lc 'pwd'");
   assert.equal(resultState.task.summary, "exec: pwd");
   assert.equal(resultState.task.cmdline, "bash -lc 'pwd'");
