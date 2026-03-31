@@ -5,6 +5,7 @@
 Hive is an inter-gateway coordination layer for OpenClaw clusters. It connects independent OpenClaw gateway instances via MQTT, enabling cross-gateway commands, event-driven file sync, sentinel monitoring, and machine-to-machine heartbeats — without burning LLM tokens on deterministic operations.
 
 **Read `docs/protocol.md` for the full design document before making architectural decisions.**
+If running Agent Method for this repo, also load `docs/project-am-profile.md`.
 
 ## Current Priorities (2026-03)
 
@@ -73,10 +74,11 @@ cli/
   tests/
     test_commands.py
 skills/
-  hive-master/
-    SKILL.md
   hive-member/
     SKILL.md
+  archive/
+    hive-master-retired/
+      SKILL.md
 contrib/
   handlers/            ← example hive-daemon.d/ scripts
   shared-memory/       ← git-based cluster memory pattern

@@ -47,6 +47,7 @@ Each gateway remains fully independent. Coordination happens through natural-lan
   "urgency": "now",
   "corr": null,
   "replyTo": null,
+  "targetSession": null,
   "ttl": 3600,
   "text": "Generate meural images for 2026-02-16"
 }
@@ -65,6 +66,7 @@ Each gateway remains fully independent. Coordination happens through natural-lan
 | `urgency` | string | yes | `now` (wake agent) or `later` (queue for heartbeat) |
 | `corr` | string | no | Correlation ID for request/reply flows |
 | `replyTo` | string | no | Message `id` this is responding to |
+| `targetSession` | string | no | Exact target OpenClaw session key for session-directed delivery |
 | `ttl` | int | no | Seconds until message expires (0 = no expiry) |
 | `text` | string | yes | Payload — natural language or structured content |
 
@@ -243,7 +245,7 @@ hive-cli status
 hive-cli roster
 ```
 
-- Bundled with the OC skills (hive-master / hive-member)
+- Bundled with the OC skill (hive-member); hive-master retired
 - SKILL.md tells OC to call this
 - Talks to MQTT directly or via hive-daemon's local socket
 - Generates envelope (id, ts, from, correlation IDs) automatically
@@ -334,7 +336,7 @@ echo "{\"workspaces\":[$(IFS=,; echo "${RESULTS[*]}")]}"
 
 ## OC Skills
 
-Two skills provide the LLM-side intelligence for hive participation:
+One skill provides the LLM-side intelligence for hive participation:
 
 ### `hive-member` (on every node)
 
@@ -344,18 +346,8 @@ Two skills provide the LLM-side intelligence for hive participation:
 - Channel semantics (what command/sync/alert mean)
 - "I received a command, here's how I participate"
 
-### `hive-master` (on coordinator node — turq)
-
-- How to delegate work using `hive-cli send`
-- Cluster roster — which nodes exist, their roles, capabilities, channels
-- Correlation tracking — what's outstanding, what timed out
-- Batch orchestration ("send to all, collect responses")
-- Escalation when members don't respond
-- "I'm orchestrating work across the cluster"
-
 **Skill loading:**
-- turq: both `hive-master` and `hive-member` available
-- pg1, mini1: `hive-member` only
+- all nodes: `hive-member`
 - Skills only loaded when a hive event arrives — zero token cost on normal turns
 - Hive-daemon includes a hint in the system event text: "Use the hive skill for protocol details"
 
@@ -631,7 +623,7 @@ Users install handlers by copying (or symlinking) into their `hive-daemon.d/` di
 | `hive-daemon` | Always-on coordination sidecar | New — Python, one per box |
 | `hive-cli` | Stateless CLI for OC/human use | New — Python, bundled with skills |
 | `system event` (OC CLI) | Inbound injection to OC | None — already works |
-| OC skills | Agent instructions for hive participation | New — `hive-master` + `hive-member` |
+| OC skills | Agent instructions for hive participation | `hive-member` (hive-master retired) |
 | Git sync timers | File propagation | Could be replaced by hive sync events |
 | OC heartbeats | Agent periodic checks | Unchanged — separate from hive heartbeats |
 | Mosquitto | Message broker | Already running — just new topics |
@@ -642,7 +634,6 @@ Users install handlers by copying (or symlinking) into their `hive-daemon.d/` di
 - [x] `hive-daemon`: MQTT subscriber, message router, handler dispatcher, heartbeat manager, OC bridge
 - [x] `hive-cli`: send (with `--wait`), reply, status, roster commands
 - [x] `hive-member` skill: full protocol reference, envelope schema, channels, correlation, CLI usage
-- [x] `hive-master` skill: delegation patterns, fan-out, correlation tracking, escalation rules
 - [x] Correlation: CLI `--wait` for synchronous round-trips + daemon `CorrelationStore` for async enrichment
 - [x] Example handlers: echo, ping, git-sync, health-check
 - [x] systemd + launchd service unit templates
@@ -671,7 +662,7 @@ Users install handlers by copying (or symlinking) into their `hive-daemon.d/` di
 1. ~~Should hive-reply be a script, an OC skill, or both?~~ → `hive-cli` is the tool, skills tell OC how to use it.
 2. ~~Should hive-daemon have a local state store?~~ → No. MQTT retained messages on meta topics + in-memory CorrelationStore for active requests.
 3. ~~Should hive-cli be Python or Node?~~ → Python (matches daemon, shares envelope module). Handlers in `hive-daemon.d/` can be any language.
-4. ~~How does this interact with OC's cron?~~ → hive-master can trigger remote work via `hive-cli send --action <handler>`. For LLM-needed tasks, the system event approach works. Cron stays local to each gateway.
+4. ~~How does this interact with OC's cron?~~ → hive-member can trigger remote work via `hive-cli send --action <handler>`. For LLM-needed tasks, the system event approach works. Cron stays local to each gateway.
 5. ~~How does OC correlate responses across sessions?~~ → Two patterns: (a) `--wait` for synchronous (stays in one tool call), (b) daemon enrichment for async (original command text prepended to system event).
 6. ~~How does the daemon know about outbound commands?~~ → Subscribes to `{prefix}/+/command` to passively observe all commands on the bus, including its own.
 
