@@ -115,16 +115,30 @@ class DiscordMasterService:
                 candidates.append(thread_base)
 
         channel_cfg = next((c for c in self.config.channels if c.name.casefold() in {x.casefold() for x in candidates}), None)
-        if not channel_cfg or not channel_cfg.mention_target:
-            return {"mention": None, "mention_user_id": None, "mention_target": None}
+        if channel_cfg and channel_cfg.mention_target:
+            mention = self._mention_from_target(channel_cfg.mention_target, channel_cfg.mention_type)
+            mention_user_id = self._user_id_from_target(channel_cfg.mention_target)
+            return {
+                "mention": mention,
+                "mention_user_id": mention_user_id,
+                "mention_target": channel_cfg.mention_target,
+            }
 
-        mention = self._mention_from_target(channel_cfg.mention_target, channel_cfg.mention_type)
-        mention_user_id = self._user_id_from_target(channel_cfg.mention_target)
-        return {
-            "mention": mention,
-            "mention_user_id": mention_user_id,
-            "mention_target": channel_cfg.mention_target,
-        }
+        # Convention fallback: use parent base name (text before -hive),
+        # e.g. "hermes-hive" -> query "hermes".
+        if parent_base:
+            try:
+                resolved = self._mention_resolve({"query": parent_base, "mention_type": "auto"})
+            except Exception:
+                resolved = {"ok": False}
+            if isinstance(resolved, dict) and resolved.get("ok") is True:
+                return {
+                    "mention": resolved.get("mention"),
+                    "mention_user_id": resolved.get("id"),
+                    "mention_target": f"auto:query:{parent_base}",
+                }
+
+        return {"mention": None, "mention_user_id": None, "mention_target": None}
 
 
     def _thread_resolve(self, payload: dict[str, Any]) -> dict[str, Any]:

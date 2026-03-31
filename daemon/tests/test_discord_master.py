@@ -177,3 +177,32 @@ def test_thread_list_mention_falls_back_to_thread_base(monkeypatch):
     out = svc.execute(env)
     assert out["ok"] is True
     assert out["threads"][0]["mention_user_id"] == "123"
+
+def test_thread_list_mention_from_parent_hive_convention(monkeypatch):
+    svc = _service(channels=[])
+
+    def fake_request(method, path, data=None):
+        if path.endswith('/channels'):
+            return [{"id": "c1", "name": "hermes-hive"}]
+        if path.endswith('/threads/active'):
+            return {"threads": [{"id": "t1", "name": "Mission Control-proj", "parent_id": "c1", "thread_metadata": {}}]}
+        if '/members/search' in path:
+            return [{"user": {"id": "1482865686102671481", "username": "Hermes"}}]
+        if path.endswith('/roles'):
+            return []
+        raise AssertionError(path)
+
+    monkeypatch.setattr(DiscordMasterService, "_request_json", lambda self, method, path, data=None: fake_request(method, path, data))
+    env = create_envelope(
+        from_="mini1",
+        to="turq",
+        ch="command",
+        action="discord.thread.list",
+        text="{}",
+    )
+
+    out = svc.execute(env)
+    assert out["ok"] is True
+    t = out["threads"][0]
+    assert t["mention"] == "<@1482865686102671481>"
+    assert t["mention_user_id"] == "1482865686102671481"
