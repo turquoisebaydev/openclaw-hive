@@ -434,7 +434,11 @@ class TestSetupRouter:
         mqtt.publish.assert_awaited_once()
         topic, payload = mqtt.publish.await_args.args
         assert topic == "turq/hive/turq/command"
-        assert '"action": "discord.thread.send"' in payload
+        body = json.loads(payload)
+        assert body["action"] == "discord.thread.send"
+        assert body["to"] == "turq"
+        assert body["corr"] == "abc"
+        assert body["id"] != "abc"
 
     async def test_command_discord_action_executes_on_master(self, monkeypatch):
         """discord.* actions execute locally on master and publish correlated response."""

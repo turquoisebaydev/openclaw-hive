@@ -9,6 +9,7 @@ import logging
 import signal
 import sys
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -325,7 +326,13 @@ def setup_router(
             return False
 
         forwarded = envelope.to_json()
+        # Use a fresh envelope id for proxied delivery. Reusing the original id
+        # can be deduplicated on the master node if it already observed the
+        # caller's command on wildcard subscriptions.
+        forwarded["id"] = str(uuid.uuid4())
+        forwarded["ts"] = int(time.time())
         forwarded["to"] = proxy_to
+        forwarded["corr"] = envelope.corr or envelope.id
         topic = f"{config.topic_prefix}/{proxy_to}/command"
         await mqtt_client.publish(topic, json.dumps(forwarded))
         log.info("proxied %s (%s) to discord master node %s", envelope.id, envelope.action, proxy_to)
