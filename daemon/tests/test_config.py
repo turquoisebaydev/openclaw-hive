@@ -488,6 +488,8 @@ def test_discord_master_config_loads(tmp_path: Path):
     assert cfg.discord_master.guild_id == "1476805337968279685"
     assert cfg.discord_master.bot_token == "tok"
     assert cfg.discord_master.proxy_to == "turq"
+    assert cfg.discord_master.default_parent_suffix == "-hive"
+    assert cfg.discord_master.default_thread_suffix == "-proj"
     assert len(cfg.discord_master.channels) == 1
     assert cfg.discord_master.channels[0].name == "qmd"
     assert cfg.discord_master.channels[0].mention_target == "user:123"

@@ -84,3 +84,30 @@ hive-cli send --to mini1 --ch command \
 
 - Responses are correlated via normal hive envelope `corr` behavior.
 - If neither local token nor `proxy_to` is configured, daemon returns a deterministic failure response.
+
+
+## High-level caller commands (complexity-free)
+
+These wrappers are for humans/agents that just want "hive threads" and "send hive message".
+
+### List hive project threads (defaults: `-hive` + `-proj`)
+
+```bash
+hive-cli hive-thread-list --to <node>
+```
+
+- Defaults come from daemon config (`discord_master.default_parent_suffix`, `discord_master.default_thread_suffix`).
+- Output includes `mention_user_id` so callers can inspect who would be pinged.
+
+### Send to a hive thread with automatic mention
+
+```bash
+hive-cli hive-thread-send \
+  --to <node> \
+  --thread-id <thread_id> \
+  --message "your text"
+```
+
+- CLI auto-resolves thread context first.
+- If a configured mention exists, CLI prefixes it automatically.
+- Use `--no-auto-mention` to disable.

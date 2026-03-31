@@ -131,6 +131,8 @@ class DiscordMasterConfig:
     proxy_to: str | None = None
     api_base: str = "https://discord.com/api/v10"
     request_timeout_sec: int = 10
+    default_parent_suffix: str = "-hive"
+    default_thread_suffix: str = "-proj"
     channels: list[DiscordMasterChannelConfig] = field(default_factory=list)
 
 
@@ -269,6 +271,8 @@ def load_config(path: Path) -> HiveConfig:
         proxy_to=discord_master_section.get("proxy_to") or discord_master_section.get("proxy_node"),
         api_base=discord_master_section.get("api_base", "https://discord.com/api/v10"),
         request_timeout_sec=discord_master_section.get("request_timeout_sec", 10),
+        default_parent_suffix=discord_master_section.get("default_parent_suffix", "-hive"),
+        default_thread_suffix=discord_master_section.get("default_thread_suffix", "-proj"),
         channels=discord_master_channels,
     )
 

@@ -612,3 +612,150 @@ def discord_mention_resolve(
         )
     )
     _print_discord_response(ctx, response, wait_timeout)
+
+
+def _discord_response_json(response: Envelope | None) -> dict | None:
+    if response is None:
+        return None
+    try:
+        return json.loads(response.text or "")
+    except json.JSONDecodeError:
+        return None
+
+
+@click.command(name="hive-thread-list")
+@click.option("--to", "to_node", default=None, help="Target node (defaults to local node id).")
+@click.option("--parent-suffix", default=None, help="Parent channel suffix filter (default from daemon config, usually -hive).")
+@click.option("--thread-suffix", default=None, help="Thread suffix filter (default from daemon config, usually -proj).")
+@click.option("--wait", "wait_timeout", default=20.0, show_default=True, type=float, help="Wait timeout (seconds).")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
+@click.pass_context
+def hive_thread_list(
+    ctx: click.Context,
+    to_node: str | None,
+    parent_suffix: str | None,
+    thread_suffix: str | None,
+    wait_timeout: float,
+    as_json: bool,
+) -> None:
+    """List hive project threads (-proj under -hive) with mention user ids."""
+    cfg = _get_config(ctx)
+    target = to_node or cfg.node_id
+    payload: dict[str, str] = {}
+    if parent_suffix is not None:
+        payload["parent_suffix"] = parent_suffix
+    if thread_suffix is not None:
+        payload["thread_suffix"] = thread_suffix
+
+    response = asyncio.run(
+        _send_discord_action(
+            cfg,
+            to_node=target,
+            action="discord.thread.list",
+            payload=payload,
+            wait_timeout=wait_timeout,
+        )
+    )
+    parsed = _discord_response_json(response)
+    if response is None:
+        click.echo(f"timeout: no response after {wait_timeout}s", err=True)
+        ctx.exit(1)
+        return
+    if parsed is None:
+        click.echo(response.text)
+        return
+    if parsed.get("ok") is not True:
+        click.echo(json.dumps(parsed, indent=2), err=True)
+        ctx.exit(1)
+        return
+
+    if as_json:
+        click.echo(json.dumps(parsed, indent=2))
+        return
+
+    threads = parsed.get("threads", []) or []
+    if not threads:
+        click.echo("no matching hive threads")
+        return
+
+    click.echo(f"filters: parent_suffix={parsed.get('parent_suffix')} thread_suffix={parsed.get('thread_suffix')}")
+    click.echo(f"{'THREAD':<26} {'THREAD_ID':<20} {'PARENT':<18} {'MENTION_USER_ID':<20}")
+    click.echo("-" * 94)
+    for t in threads:
+        click.echo(
+            f"{str(t.get('name',''))[:26]:<26} {str(t.get('id','')):<20} "
+            f"{str(t.get('parent_name',''))[:18]:<18} {str(t.get('mention_user_id') or '-'): <20}"
+        )
+
+
+@click.command(name="hive-thread-send")
+@click.option("--to", "to_node", default=None, help="Target node (defaults to local node id).")
+@click.option("--thread-id", required=True, help="Discord thread channel id.")
+@click.option("--message", required=True, help="Message body to send.")
+@click.option("--no-auto-mention", is_flag=True, help="Disable automatic mention prefixing.")
+@click.option("--wait", "wait_timeout", default=20.0, show_default=True, type=float, help="Wait timeout (seconds).")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON response.")
+@click.pass_context
+def hive_thread_send(
+    ctx: click.Context,
+    to_node: str | None,
+    thread_id: str,
+    message: str,
+    no_auto_mention: bool,
+    wait_timeout: float,
+    as_json: bool,
+) -> None:
+    """Send to a hive thread with automatic mention resolution."""
+    cfg = _get_config(ctx)
+    target = to_node or cfg.node_id
+
+    final_message = message.strip()
+    if not final_message:
+        raise click.UsageError("--message must be non-empty")
+
+    if not no_auto_mention:
+        resolve_response = asyncio.run(
+            _send_discord_action(
+                cfg,
+                to_node=target,
+                action="discord.thread.resolve",
+                payload={"thread_id": thread_id},
+                wait_timeout=wait_timeout,
+            )
+        )
+        parsed_resolve = _discord_response_json(resolve_response)
+        if parsed_resolve and parsed_resolve.get("ok") is True:
+            mention = ((parsed_resolve.get("thread") or {}).get("mention") or "").strip()
+            if mention and mention not in final_message:
+                final_message = f"{mention} {final_message}"
+
+    send_response = asyncio.run(
+        _send_discord_action(
+            cfg,
+            to_node=target,
+            action="discord.thread.send",
+            payload={"thread_id": thread_id, "content": final_message},
+            wait_timeout=wait_timeout,
+        )
+    )
+
+    parsed_send = _discord_response_json(send_response)
+    if send_response is None:
+        click.echo(f"timeout: no response after {wait_timeout}s", err=True)
+        ctx.exit(1)
+        return
+    if parsed_send is None:
+        click.echo(send_response.text)
+        return
+    if parsed_send.get("ok") is not True:
+        click.echo(json.dumps(parsed_send, indent=2), err=True)
+        ctx.exit(1)
+        return
+
+    if as_json:
+        click.echo(json.dumps(parsed_send, indent=2))
+        return
+
+    msg = parsed_send.get("message") or {}
+    click.echo(f"sent {msg.get('id')} -> thread {parsed_send.get('thread_id')}")
+    click.echo(msg.get("content") or "")

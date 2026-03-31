@@ -954,3 +954,69 @@ class TestDiscordCommands:
         assert result.exit_code != 0
         assert "Provide at least one" in result.output
         assert not mock_wait.called
+
+    @patch("hive_cli.commands._publish_and_wait")
+    def test_hive_thread_list_defaults(self, mock_wait, runner, config_file):
+        response = create_envelope(
+            from_="pg1",
+            to="test-node-1",
+            ch="response",
+            text=json.dumps({
+                "ok": True,
+                "parent_suffix": "-hive",
+                "thread_suffix": "-proj",
+                "threads": [
+                    {"id": "t1", "name": "qmd-proj", "parent_name": "qmd-hive", "mention_user_id": "123"}
+                ],
+            }),
+            urgency="now",
+            corr="c2",
+        )
+        mock_wait.return_value = response
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "hive-thread-list",
+            "--to", "pg1",
+            "--wait", "10",
+        ])
+        assert result.exit_code == 0, result.output
+        assert "qmd-proj" in result.output
+        assert "123" in result.output
+
+    @patch("hive_cli.commands._publish_and_wait")
+    def test_hive_thread_send_auto_mentions(self, mock_wait, runner, config_file):
+        resolve = create_envelope(
+            from_="pg1",
+            to="test-node-1",
+            ch="response",
+            text=json.dumps({"ok": True, "thread": {"mention": "<@123>"}}),
+            urgency="now",
+            corr="r1",
+        )
+        sent = create_envelope(
+            from_="pg1",
+            to="test-node-1",
+            ch="response",
+            text=json.dumps({"ok": True, "thread_id": "t1", "message": {"id": "m1", "content": "<@123> hi"}}),
+            urgency="now",
+            corr="r2",
+        )
+        mock_wait.side_effect = [resolve, sent]
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "hive-thread-send",
+            "--to", "pg1",
+            "--thread-id", "t1",
+            "--message", "hi",
+            "--wait", "10",
+        ])
+        assert result.exit_code == 0, result.output
+
+        # second call payload should include auto mention prefix
+        args2, _ = mock_wait.call_args_list[1]
+        payload_json = json.loads(args2[2])
+        assert payload_json["text"]
+        body = json.loads(payload_json["text"])
+        assert body["content"].startswith("<@123>")

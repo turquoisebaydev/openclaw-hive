@@ -155,3 +155,14 @@ Use this for:
 2. history reads (`discord.thread.history`)
 3. thread sends (`discord.thread.send`)
 4. mention token resolution (`discord.mention.resolve`)
+
+### Complexity-free thread operations
+
+Prefer wrapper commands for operator usage:
+
+```bash
+hive-cli hive-thread-list --to <node>
+hive-cli hive-thread-send --to <node> --thread-id <id> --message "update"
+```
+
+This keeps callers out of mention-target and thread-matching details.

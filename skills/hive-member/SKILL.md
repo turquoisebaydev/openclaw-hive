@@ -184,3 +184,17 @@ hive-cli send --to <node> --ch command --action discord.thread.history \
 ```
 
 These actions are deterministic daemon paths (no LLM turn required).
+
+### Simpler hive thread UX (recommended)
+
+Use these wrappers to avoid manual mention/thread plumbing:
+
+```bash
+# list default hive project threads (-hive parents + -proj threads)
+hive-cli hive-thread-list --to <node>
+
+# send with automatic mention resolution/prefix
+hive-cli hive-thread-send --to <node> --thread-id <id> --message "hello"
+```
+
+`hive-thread-send` auto-adds the configured mention when available.

@@ -44,6 +44,8 @@ class DiscordMasterService:
             return self._thread_history(payload)
         if action == "discord.thread.send":
             return self._thread_send(payload)
+        if action == "discord.thread.list":
+            return self._thread_list(payload)
         if action == "discord.mention.resolve":
             return self._mention_resolve(payload)
 
@@ -82,17 +84,66 @@ class DiscordMasterService:
         except error.URLError as exc:
             raise DiscordMasterError(f"discord api unavailable: {exc}") from exc
 
+
+    def _user_id_from_target(self, target: str) -> str | None:
+        t = (target or "").strip()
+        if t.startswith("user:") and t[5:].isdigit():
+            return t[5:]
+        m = re.match(r"^<@(\d+)>$", t)
+        if m:
+            return m.group(1)
+        if t.isdigit():
+            return t
+        return None
+
+    def _base_channel_name(self, parent_name: str, parent_suffix: str) -> str:
+        if parent_suffix and parent_name.endswith(parent_suffix):
+            return parent_name[: -len(parent_suffix)]
+        return parent_name
+
+    def _channel_mention_info(self, parent_name: str, parent_suffix: str, thread_name: str | None = None, thread_suffix: str | None = None) -> dict[str, Any]:
+        candidates = []
+        parent_base = self._base_channel_name(parent_name, parent_suffix)
+        if parent_base:
+            candidates.append(parent_base)
+        if thread_name:
+            tsfx = thread_suffix if thread_suffix is not None else self.config.default_thread_suffix
+            thread_base = thread_name
+            if tsfx and thread_base.endswith(tsfx):
+                thread_base = thread_base[: -len(tsfx)]
+            if thread_base:
+                candidates.append(thread_base)
+
+        channel_cfg = next((c for c in self.config.channels if c.name.casefold() in {x.casefold() for x in candidates}), None)
+        if not channel_cfg or not channel_cfg.mention_target:
+            return {"mention": None, "mention_user_id": None, "mention_target": None}
+
+        mention = self._mention_from_target(channel_cfg.mention_target, channel_cfg.mention_type)
+        mention_user_id = self._user_id_from_target(channel_cfg.mention_target)
+        return {
+            "mention": mention,
+            "mention_user_id": mention_user_id,
+            "mention_target": channel_cfg.mention_target,
+        }
+
+
     def _thread_resolve(self, payload: dict[str, Any]) -> dict[str, Any]:
         thread_id = str(payload.get("thread_id") or payload.get("threadId") or "").strip()
         if thread_id:
             thread = self._request_json("GET", f"/channels/{thread_id}")
+            parent_id = thread.get("parent_id")
+            parent = self._request_json("GET", f"/channels/{parent_id}") if parent_id else {}
+            parent_name = str(parent.get("name") or "")
+            mention_info = self._channel_mention_info(parent_name, self.config.default_parent_suffix, thread.get("name"), self.config.default_thread_suffix)
             return {
                 "ok": True,
                 "thread": {
                     "id": thread.get("id"),
                     "name": thread.get("name"),
-                    "parent_id": thread.get("parent_id"),
+                    "parent_id": parent_id,
+                    "parent_name": parent_name,
                     "archived": bool((thread.get("thread_metadata") or {}).get("archived", False)),
+                    **mention_info,
                 },
             }
 
@@ -109,14 +160,62 @@ class DiscordMasterService:
         if match is None:
             return {"ok": False, "error": "thread_not_found", "thread_name": wanted}
 
+        parent_id = match.get("parent_id")
+        parent = self._request_json("GET", f"/channels/{parent_id}") if parent_id else {}
+        parent_name = str(parent.get("name") or "")
+        mention_info = self._channel_mention_info(parent_name, self.config.default_parent_suffix, thread.get("name"), self.config.default_thread_suffix)
         return {
             "ok": True,
             "thread": {
                 "id": match.get("id"),
                 "name": match.get("name"),
-                "parent_id": match.get("parent_id"),
+                "parent_id": parent_id,
+                "parent_name": parent_name,
                 "archived": bool((match.get("thread_metadata") or {}).get("archived", False)),
+                **mention_info,
             },
+        }
+
+
+    def _thread_list(self, payload: dict[str, Any]) -> dict[str, Any]:
+        parent_suffix = str(payload.get("parent_suffix") or payload.get("parentSuffix") or self.config.default_parent_suffix)
+        thread_suffix = str(payload.get("thread_suffix") or payload.get("threadSuffix") or self.config.default_thread_suffix)
+
+        channels = self._request_json("GET", f"/guilds/{self.config.guild_id}/channels")
+        channel_by_id = {str(c.get("id")): c for c in channels if isinstance(c, dict) and c.get("id")}
+
+        active = self._request_json("GET", f"/guilds/{self.config.guild_id}/threads/active")
+        threads = active.get("threads", []) if isinstance(active, dict) else []
+
+        items: list[dict[str, Any]] = []
+        for t in threads:
+            tname = str(t.get("name") or "")
+            parent_id = str(t.get("parent_id") or "")
+            parent = channel_by_id.get(parent_id, {})
+            pname = str(parent.get("name") or "")
+            if parent_suffix and not pname.endswith(parent_suffix):
+                continue
+            if thread_suffix and not tname.endswith(thread_suffix):
+                continue
+            mention_info = self._channel_mention_info(pname, parent_suffix, tname, thread_suffix)
+            items.append(
+                {
+                    "id": t.get("id"),
+                    "name": tname,
+                    "parent_id": parent_id,
+                    "parent_name": pname,
+                    "archived": bool((t.get("thread_metadata") or {}).get("archived", False)),
+                    **mention_info,
+                }
+            )
+
+        items.sort(key=lambda x: (x.get("parent_name") or "", x.get("name") or ""))
+        return {
+            "ok": True,
+            "count": len(items),
+            "parent_suffix": parent_suffix,
+            "thread_suffix": thread_suffix,
+            "threads": items,
         }
 
     def _thread_history(self, payload: dict[str, Any]) -> dict[str, Any]:

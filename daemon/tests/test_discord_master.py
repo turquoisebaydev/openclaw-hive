@@ -121,3 +121,59 @@ def test_unavailable_service_raises():
     )
     with pytest.raises(DiscordMasterError):
         svc.execute(env)
+
+def test_thread_list_filters_and_includes_mention(monkeypatch):
+    svc = _service()
+
+    def fake_request(method, path, data=None):
+        if path.endswith('/channels'):
+            return [
+                {"id": "c1", "name": "qmd-hive"},
+                {"id": "c2", "name": "random"},
+            ]
+        if path.endswith('/threads/active'):
+            return {
+                "threads": [
+                    {"id": "t1", "name": "QMD-proj", "parent_id": "c1", "thread_metadata": {}},
+                    {"id": "t2", "name": "other", "parent_id": "c1", "thread_metadata": {}},
+                ]
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(DiscordMasterService, "_request_json", lambda self, method, path, data=None: fake_request(method, path, data))
+    env = create_envelope(
+        from_="mini1",
+        to="turq",
+        ch="command",
+        action="discord.thread.list",
+        text="{}",
+    )
+
+    out = svc.execute(env)
+    assert out["ok"] is True
+    assert out["count"] == 1
+    assert out["threads"][0]["name"] == "QMD-proj"
+    assert out["threads"][0]["mention_user_id"] == "123"
+
+def test_thread_list_mention_falls_back_to_thread_base(monkeypatch):
+    svc = _service()
+
+    def fake_request(method, path, data=None):
+        if path.endswith('/channels'):
+            return [{"id": "c1", "name": "hermes-hive"}]
+        if path.endswith('/threads/active'):
+            return {"threads": [{"id": "t1", "name": "QMD-proj", "parent_id": "c1", "thread_metadata": {}}]}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(DiscordMasterService, "_request_json", lambda self, method, path, data=None: fake_request(method, path, data))
+    env = create_envelope(
+        from_="mini1",
+        to="turq",
+        ch="command",
+        action="discord.thread.list",
+        text="{}",
+    )
+
+    out = svc.execute(env)
+    assert out["ok"] is True
+    assert out["threads"][0]["mention_user_id"] == "123"

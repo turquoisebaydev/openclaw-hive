@@ -8,7 +8,7 @@ import click
 
 from hive_daemon.config import HiveConfig, load_config
 
-from hive_cli.commands import send, reply, status, sessions, session_history, roster, discord
+from hive_cli.commands import send, reply, status, sessions, session_history, roster, discord, hive_thread_list, hive_thread_send
 
 
 @click.group()
@@ -32,6 +32,8 @@ cli.add_command(sessions)
 cli.add_command(session_history)
 cli.add_command(roster)
 cli.add_command(discord)
+cli.add_command(hive_thread_list)
+cli.add_command(hive_thread_send)
 
 
 def main() -> None:
