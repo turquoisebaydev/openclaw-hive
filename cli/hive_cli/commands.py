@@ -19,12 +19,22 @@ from hive_daemon.envelope import (
     VALID_CHANNELS,
     VALID_URGENCIES,
 )
-from hive_daemon.presence import (
-    PresenceCache,
-    PresenceRecord,
-    read_local_session_history,
-    resolve_session_target,
-)
+try:
+    from hive_daemon.presence import (
+        PresenceCache,
+        PresenceRecord,
+        read_local_session_history,
+        resolve_session_target,
+    )
+except ImportError:  # backward compat with nodes missing session-history helpers
+    from hive_daemon.presence import (
+        PresenceCache,
+        PresenceRecord,
+        resolve_session_target,
+    )
+
+    def read_local_session_history(*args, **kwargs):  # type: ignore[override]
+        return []
 
 
 def _get_config(ctx: click.Context) -> HiveConfig:
