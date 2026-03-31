@@ -24,6 +24,7 @@ except Exception:  # pragma: no cover - optional dependency
 from hive_daemon.announcer import Announcer
 from hive_daemon.config import HiveConfig, load_config
 from hive_daemon.dispatcher import Dispatcher
+from hive_daemon.discord_master import DiscordMasterError, DiscordMasterService
 from hive_daemon.envelope import Envelope, EnvelopeError
 from hive_daemon.heartbeat import HeartbeatManager
 from hive_daemon.oc_bridge import OcBridge
@@ -282,6 +283,7 @@ def setup_router(
     Falls back to logging for channels without a dedicated handler.
     """
     router = Router()
+    discord_master = DiscordMasterService(config.discord_master)
 
     def _resolve_instance(target: str) -> str | None:
         """Resolve a topic target to an OC instance name.
@@ -299,25 +301,65 @@ def setup_router(
         log.info("received %s message %s from %s: %s",
                  envelope.ch, envelope.id, envelope.from_, envelope.text[:80])
 
-    async def _publish_dispatch_response(envelope: Envelope, result: "DispatchResult") -> None:
-        """Publish a handler's dispatch result back as a response envelope."""
+    async def _publish_response_text(envelope: Envelope, text: str) -> None:
         if mqtt_client is None:
             return
         from hive_daemon.envelope import create_reply
-        text = result.stdout.strip() if result.success else f"FAILED (exit {result.exit_code}): {result.stderr.strip()}"
-        # Make the responder identity match the addressed local instance when possible.
-        # This keeps pings readable in multi-instance mode (e.g. turq vs mini1).
+
         local_names = {config.node_id} | config.instance_names
         responder = envelope.to if envelope.to in local_names and envelope.to != "all" else config.node_id
         reply = create_reply(envelope, from_=responder, text=text)
         topic = f"{config.topic_prefix}/{envelope.from_}/response"
         payload = json.dumps(reply.to_json())
         await mqtt_client.publish(topic, payload)
-        log.info("published dispatch response %s -> %s", reply.id, topic)
+        log.info("published response %s -> %s", reply.id, topic)
 
-    # --- command channel -> dispatcher (if handler exists) then OC bridge ---
+    async def _publish_dispatch_response(envelope: Envelope, result: "DispatchResult") -> None:
+        """Publish a handler's dispatch result back as a response envelope."""
+        text = result.stdout.strip() if result.success else f"FAILED (exit {result.exit_code}): {result.stderr.strip()}"
+        await _publish_response_text(envelope, text)
+
+    async def _proxy_discord_action(envelope: Envelope) -> bool:
+        proxy_to = (config.discord_master.proxy_to or "").strip()
+        if mqtt_client is None or not proxy_to:
+            return False
+
+        forwarded = envelope.to_json()
+        forwarded["to"] = proxy_to
+        topic = f"{config.topic_prefix}/{proxy_to}/command"
+        await mqtt_client.publish(topic, json.dumps(forwarded))
+        log.info("proxied %s (%s) to discord master node %s", envelope.id, envelope.action, proxy_to)
+        return True
+
+    async def _handle_discord_action(envelope: Envelope) -> bool:
+        action = envelope.action or ""
+        if not action.startswith("discord."):
+            return False
+
+        if discord_master.available():
+            try:
+                result = discord_master.execute(envelope)
+            except DiscordMasterError as exc:
+                await _publish_response_text(envelope, f"FAILED: {exc}")
+                return True
+            await _publish_response_text(envelope, json.dumps(result))
+            return True
+
+        if await _proxy_discord_action(envelope):
+            return True
+
+        await _publish_response_text(
+            envelope,
+            "FAILED: discord master unavailable (set discord_master.bot_token on this node or discord_master.proxy_to)",
+        )
+        return True
+
+    # --- command channel -> discord master/proxy, dispatcher, then OC bridge ---
     if dispatcher is not None or oc_bridge is not None:
         async def _command_handler(envelope: Envelope, target: str) -> None:
+            if envelope.action and await _handle_discord_action(envelope):
+                return
+
             if dispatcher is not None and envelope.action and dispatcher.has_handler(envelope.action):
                 log.info("dispatching command action %r from %s", envelope.action, envelope.id)
                 result = await dispatcher.dispatch(envelope)
@@ -368,11 +410,6 @@ def setup_router(
         router.register("heartbeat", _log_handler)
 
     # --- response channel -> deterministic consume/log only ---
-    #
-    # IMPORTANT: do not inject generic response traffic back into OC by default.
-    # Injecting responses can cause cross-gateway reply loops (response -> OC ->
-    # generated reply -> response ...). Keep responses on deterministic paths
-    # (`hive-cli --wait`, reply/session mappings, logs/announcements).
     async def _response_handler(envelope: Envelope, target: str) -> None:
         original = corr_store.match(envelope) if corr_store else None
         if original is not None:

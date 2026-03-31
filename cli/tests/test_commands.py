@@ -686,6 +686,8 @@ class TestSessionTargetSend:
         assert "sent" in result.output
         # Should route to the resolved gateway
         assert "turq/hive/pg1/command" in result.output
+        payload = json.loads(client.publish.call_args.args[1].decode())
+        assert payload["targetSession"] == "sess-1"
 
     @patch("hive_cli.commands._read_presence")
     def test_to_session_not_found(self, mock_read_presence, runner, config_file):
@@ -783,3 +785,172 @@ class TestSessionTargetSend:
 
         assert result.exit_code != 0
         assert "required" in result.output.lower() or "Either" in result.output
+
+
+# ── sessions command ───────────────────────────────────────────────
+
+class TestSessionsCommand:
+
+    @patch("hive_cli.commands._read_presence")
+    def test_sessions_json(self, mock_read_presence, runner, config_file):
+        from hive_daemon.presence import PresenceCache, PresenceRecord, RecentMessage
+
+        cache = PresenceCache()
+        cache.update(PresenceRecord(
+            gw="pg1",
+            agent="hermes",
+            session="sess-1",
+            session_type="hermes",
+            history_available=True,
+            recent_messages=(RecentMessage(role="user", text="hello"),),
+            updated_ts=1000,
+            ttl_sec=300,
+        ))
+        mock_read_presence.return_value = cache
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "sessions",
+            "--json",
+        ])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload[0]["gw"] == "pg1"
+        assert payload[0]["agent"] == "hermes"
+        assert payload[0]["sessionType"] == "hermes"
+        assert payload[0]["historyAvailable"] is True
+        assert payload[0]["recentMessages"][0]["text"] == "hello"
+
+    @patch("hive_cli.commands._read_presence")
+    def test_sessions_human_output(self, mock_read_presence, runner, config_file):
+        from hive_daemon.presence import PresenceCache, PresenceRecord, RecentMessage, TaskSummary
+
+        cache = PresenceCache()
+        cache.update(PresenceRecord(
+            gw="pg1",
+            agent="main",
+            session="sess-1",
+            session_type="claude",
+            model="claude-sonnet-4-6",
+            status="busy",
+            task=TaskSummary(summary="Investigating history"),
+            recent_messages=(RecentMessage(role="assistant", text="latest reply"),),
+            updated_ts=1000,
+            ttl_sec=300,
+        ))
+        mock_read_presence.return_value = cache
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "sessions",
+        ])
+
+        assert result.exit_code == 0, result.output
+        assert "SESSION" in result.output
+        assert "claude" in result.output
+        assert "Investigating history" in result.output
+        assert "assistant: latest reply" in result.output
+
+
+# ── session-history command ───────────────────────────────────────
+
+class TestSessionHistoryCommand:
+
+    @patch("hive_cli.commands.read_local_session_history")
+    @patch("hive_cli.commands._read_presence")
+    def test_session_history_json(self, mock_read_presence, mock_history, runner, config_file):
+        from hive_daemon.presence import PresenceCache, PresenceRecord
+
+        cache = PresenceCache()
+        cache.update(PresenceRecord(
+            gw="pg1",
+            agent="hermes",
+            session="sess-1",
+            updated_ts=1000,
+            ttl_sec=300,
+        ))
+        mock_read_presence.return_value = cache
+        mock_history.return_value = [{"role": "user", "text": "hello", "ts": "2026-03-31T00:00:00Z"}]
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "session-history",
+            "pg1/hermes/sess-1",
+            "--json",
+        ])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload[0]["role"] == "user"
+        mock_history.assert_called_once()
+
+    @patch("hive_cli.commands.read_local_session_history")
+    @patch("hive_cli.commands._read_presence")
+    def test_session_history_missing_local_data(self, mock_read_presence, mock_history, runner, config_file):
+        from hive_daemon.presence import PresenceCache, PresenceRecord
+
+        cache = PresenceCache()
+        cache.update(PresenceRecord(
+            gw="pg1",
+            agent="main",
+            session="sess-1",
+            updated_ts=1000,
+            ttl_sec=300,
+        ))
+        mock_read_presence.return_value = cache
+        mock_history.return_value = []
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "session-history",
+            "pg1/main/sess-1",
+        ])
+
+        assert result.exit_code != 0
+        assert "not available locally" in result.output
+
+
+# ── discord command group ───────────────────────────────────────────
+
+class TestDiscordCommands:
+
+    @patch("hive_cli.commands._publish_and_wait")
+    def test_discord_thread_send(self, mock_wait, runner, config_file):
+        response = create_envelope(
+            from_="pg1",
+            to="test-node-1",
+            ch="response",
+            text=json.dumps({"ok": True, "message": {"id": "m1"}}),
+            urgency="now",
+            corr="c1",
+        )
+        mock_wait.return_value = response
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "discord", "thread-send",
+            "--to", "pg1",
+            "--thread-id", "123",
+            "--content", "hello",
+            "--wait", "15",
+        ])
+
+        assert result.exit_code == 0, result.output
+        assert '"ok": true' in result.output.lower()
+        assert mock_wait.called
+        args, kwargs = mock_wait.call_args
+        assert kwargs == {}
+        assert args[4] == 15.0
+
+    @patch("hive_cli.commands._publish_and_wait")
+    def test_discord_mention_resolve_requires_input(self, mock_wait, runner, config_file):
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "discord", "mention-resolve",
+            "--to", "pg1",
+        ])
+
+        assert result.exit_code != 0
+        assert "Provide at least one" in result.output
+        assert not mock_wait.called

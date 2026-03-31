@@ -138,3 +138,20 @@ For LLM-handled commands, the remote node only replies if it has information to 
 - **Don't bypass hive** — if a node is in the cluster, talk to it through hive
 - **Don't send secrets** — reference them ("use the key from 1Password")
 - **Don't expect responses from fire-and-forget** — if you need info back, use `--wait`
+
+## Discord Master deterministic routing
+
+Prefer `discord.*` action calls for Discord thread operations so non-token nodes can route through the Discord master daemon.
+
+```bash
+# from any node, target local daemon; it will execute or proxy to master
+hive-cli send --to mini1 --ch command --action discord.thread.send \
+  --text '{"thread_id":"1487915581649981451","content":"<@1482865686102671481> ping"}' \
+  --wait 10
+```
+
+Use this for:
+1. thread resolution (`discord.thread.resolve`)
+2. history reads (`discord.thread.history`)
+3. thread sends (`discord.thread.send`)
+4. mention token resolution (`discord.mention.resolve`)

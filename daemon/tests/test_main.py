@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from hive_daemon.config import HiveConfig, MqttConfig, OcInstance, PresenceConfig
+from hive_daemon.config import HiveConfig, MqttConfig, OcInstance, PresenceConfig, DiscordMasterConfig
 from hive_daemon.envelope import Envelope
 from hive_daemon.main import (
     _build_topics,
@@ -400,3 +400,81 @@ class TestSetupRouter:
             )
             # Should not raise — handler exists
             await router.route(env)
+
+    async def test_command_discord_action_proxies_when_no_token(self):
+        """discord.* actions proxy to configured master when token is local-missing."""
+        cfg = HiveConfig(
+            node_id="mini1",
+            topic_prefix="turq/hive",
+            discord_master=DiscordMasterConfig(
+                enabled=True,
+                guild_id=None,
+                bot_token=None,
+                proxy_to="turq",
+            ),
+        )
+        mqtt = MagicMock()
+        mqtt.publish = AsyncMock()
+        oc_bridge = MagicMock()
+        oc_bridge.inject_envelope = AsyncMock()
+        router = setup_router(cfg, mqtt_client=mqtt, oc_bridge=oc_bridge)
+        env = Envelope(
+            v=1,
+            id="abc",
+            ts=1000000,
+            from_="mini1",
+            to="mini1",
+            ch="command",
+            urgency="now",
+            action="discord.thread.send",
+            text='{"thread_id":"1","content":"hi"}',
+        )
+
+        await router.route(env, target="mini1")
+        mqtt.publish.assert_awaited_once()
+        topic, payload = mqtt.publish.await_args.args
+        assert topic == "turq/hive/turq/command"
+        assert '"action": "discord.thread.send"' in payload
+
+    async def test_command_discord_action_executes_on_master(self, monkeypatch):
+        """discord.* actions execute locally on master and publish correlated response."""
+        cfg = HiveConfig(
+            node_id="turq",
+            topic_prefix="turq/hive",
+            discord_master=DiscordMasterConfig(
+                enabled=True,
+                guild_id="g1",
+                bot_token="tok",
+            ),
+        )
+        mqtt = MagicMock()
+        mqtt.publish = AsyncMock()
+
+        from hive_daemon import discord_master as dm
+
+        def fake_execute(self, envelope):
+            return {"ok": True, "message": "done"}
+
+        monkeypatch.setattr(dm.DiscordMasterService, "execute", fake_execute)
+        oc_bridge = MagicMock()
+        oc_bridge.inject_envelope = AsyncMock()
+        router = setup_router(cfg, mqtt_client=mqtt, oc_bridge=oc_bridge)
+        env = Envelope(
+            v=1,
+            id="abc2",
+            ts=1000000,
+            from_="mini1",
+            to="turq",
+            ch="command",
+            urgency="now",
+            action="discord.thread.history",
+            text='{"thread_id":"1"}',
+        )
+
+        await router.route(env, target="turq")
+        mqtt.publish.assert_awaited_once()
+        topic, payload = mqtt.publish.await_args.args
+        assert topic == "turq/hive/mini1/response"
+        body = json.loads(payload)
+        assert body["ch"] == "response"
+        assert json.loads(body["text"])["ok"] is True

@@ -461,3 +461,33 @@ class TestAuditConfig:
         f.write_text(AUDIT_DISABLED_TOML)
         cfg = load_config(f)
         assert cfg.announcements.audit.enabled is False
+
+DISCORD_MASTER_TOML = """\
+[node]
+id = "turq"
+
+[discord_master]
+enabled = true
+guild_id = "1476805337968279685"
+bot_token = "tok"
+proxy_to = "turq"
+
+[[discord_master.channels]]
+name = "qmd"
+mention_target = "user:123"
+mention_type = "user"
+thread_suffix = "-proj"
+"""
+
+
+def test_discord_master_config_loads(tmp_path: Path):
+    f = tmp_path / "hive.toml"
+    f.write_text(DISCORD_MASTER_TOML)
+    cfg = load_config(f)
+    assert cfg.discord_master.enabled is True
+    assert cfg.discord_master.guild_id == "1476805337968279685"
+    assert cfg.discord_master.bot_token == "tok"
+    assert cfg.discord_master.proxy_to == "turq"
+    assert len(cfg.discord_master.channels) == 1
+    assert cfg.discord_master.channels[0].name == "qmd"
+    assert cfg.discord_master.channels[0].mention_target == "user:123"

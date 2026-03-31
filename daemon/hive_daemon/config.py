@@ -111,6 +111,30 @@ class AnnouncementsConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class DiscordMasterChannelConfig:
+    """A configured Discord channel managed by the Discord master daemon."""
+
+    name: str
+    gateway: str | None = None
+    mention_target: str | None = None
+    mention_type: str = "auto"
+    thread_suffix: str = "-proj"
+
+
+@dataclass(frozen=True, slots=True)
+class DiscordMasterConfig:
+    """Discord bot API settings for the Discord master daemon."""
+
+    enabled: bool = False
+    guild_id: str | None = None
+    bot_token: str | None = None
+    proxy_to: str | None = None
+    api_base: str = "https://discord.com/api/v10"
+    request_timeout_sec: int = 10
+    channels: list[DiscordMasterChannelConfig] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
 class HiveConfig:
     """Top-level hive daemon configuration."""
 
@@ -123,6 +147,7 @@ class HiveConfig:
     heartbeat: HeartbeatConfig = field(default_factory=HeartbeatConfig)
     presence: PresenceConfig = field(default_factory=PresenceConfig)
     announcements: AnnouncementsConfig = field(default_factory=AnnouncementsConfig)
+    discord_master: DiscordMasterConfig = field(default_factory=DiscordMasterConfig)
     log_level: str = "INFO"
 
     @property
@@ -221,6 +246,32 @@ def load_config(path: Path) -> HiveConfig:
         audit=audit_cfg,
     )
 
+    discord_master_section = raw.get("discord_master", {})
+    discord_master_channels: list[DiscordMasterChannelConfig] = []
+    for channel in discord_master_section.get("channels", []):
+        name = channel.get("name") or channel.get("channel")
+        if not name:
+            raise KeyError("discord_master.channels[].name is required")
+        discord_master_channels.append(
+            DiscordMasterChannelConfig(
+                name=name,
+                gateway=channel.get("gateway") or channel.get("gw"),
+                mention_target=channel.get("mention_target") or channel.get("mention"),
+                mention_type=channel.get("mention_type") or channel.get("mention_kind", "auto"),
+                thread_suffix=channel.get("thread_suffix") or channel.get("thread_name_suffix", "-proj"),
+            )
+        )
+
+    discord_master = DiscordMasterConfig(
+        enabled=discord_master_section.get("enabled", False),
+        guild_id=discord_master_section.get("guild_id"),
+        bot_token=discord_master_section.get("bot_token"),
+        proxy_to=discord_master_section.get("proxy_to") or discord_master_section.get("proxy_node"),
+        api_base=discord_master_section.get("api_base", "https://discord.com/api/v10"),
+        request_timeout_sec=discord_master_section.get("request_timeout_sec", 10),
+        channels=discord_master_channels,
+    )
+
     return HiveConfig(
         node_id=node_id,
         topic_prefix=node_section.get("topic_prefix", "turq/hive"),
@@ -231,5 +282,6 @@ def load_config(path: Path) -> HiveConfig:
         heartbeat=heartbeat,
         presence=presence,
         announcements=announcements,
+        discord_master=discord_master,
         log_level=raw.get("logging", {}).get("level", "INFO"),
     )

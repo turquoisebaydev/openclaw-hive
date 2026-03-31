@@ -22,6 +22,7 @@ from hive_daemon.envelope import (
 from hive_daemon.presence import (
     PresenceCache,
     PresenceRecord,
+    read_local_session_history,
     resolve_session_target,
 )
 
@@ -133,6 +134,12 @@ def _parse_session_target(target: str) -> tuple[str, str | None, str]:
         )
 
 
+def _sorted_presence_records(cache: PresenceCache) -> list[PresenceRecord]:
+    records = cache.all_fresh()
+    records.sort(key=lambda r: (r.gw, r.agent, r.session))
+    return records
+
+
 async def _read_retained(cfg: HiveConfig, topic_filter: str, timeout: float = 2.0) -> list[dict]:
     """Subscribe to a topic, collect retained messages, then return.
 
@@ -195,6 +202,7 @@ def send(ctx: click.Context, to_node: str | None, to_session: str | None, channe
             return
         # Resolved — route to the gateway node
         to_node = result.record.gw
+        to_session = result.record.session
 
     # Use corr = envelope id so the responder's create_reply sets corr automatically
     env = create_envelope(
@@ -205,6 +213,7 @@ def send(ctx: click.Context, to_node: str | None, to_session: str | None, channe
         urgency=urgency,
         ttl=ttl,
         action=action,
+        target_session=to_session,
     )
     topic = f"{cfg.topic_prefix}/{to_node}/{channel}"
     payload = json.dumps(env.to_json())
@@ -338,6 +347,77 @@ def status(ctx: click.Context, as_json: bool) -> None:
         click.echo(f"{str(node):<20} {str(state):<10} {gw_cell:<4} {cron_cell:<5} {err_cell:<6} {cmd_cell:<14} {last_seen}")
 
 
+@click.command(name="sessions")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
+@click.pass_context
+def sessions(ctx: click.Context, as_json: bool) -> None:
+    """Display retained live session presence, including recent message previews."""
+    cfg = _get_config(ctx)
+    cache = asyncio.run(_read_presence(cfg))
+    records = _sorted_presence_records(cache)
+
+    if not records:
+        click.echo("no active sessions")
+        return
+
+    if as_json:
+        click.echo(json.dumps([record.to_dict() for record in records], indent=2))
+        return
+
+    click.echo(f"{'GW':<8} {'AGENT':<8} {'TYPE':<10} {'MODEL':<22} {'STATUS':<8} SESSION")
+    click.echo("-" * 96)
+    for record in records:
+        model = record.model if len(record.model) <= 22 else record.model[:19] + "..."
+        session_type = record.session_type or "-"
+        click.echo(
+            f"{record.gw:<8} {record.agent:<8} {session_type:<10} "
+            f"{model:<22} {record.status:<8} {record.session}"
+        )
+        if record.task.summary:
+            click.echo(f"  summary: {record.task.summary}")
+        for msg in record.recent_messages:
+            click.echo(f"  {msg.role}: {msg.text}")
+
+
+@click.command(name="session-history")
+@click.argument("target")
+@click.option("--limit", default=100, type=int, show_default=True, help="Maximum transcript messages to return.")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
+@click.pass_context
+def session_history(ctx: click.Context, target: str, limit: int, as_json: bool) -> None:
+    """Display transcript history for one locally managed session."""
+    cfg = _get_config(ctx)
+    gw, agent, sess = _parse_session_target(target)
+    cache = asyncio.run(_read_presence(cfg))
+    result = resolve_session_target(cache, gw=gw, agent=agent, session=sess)
+    if not result.ok:
+        click.echo(json.dumps(result.error, indent=2), err=True)
+        ctx.exit(1)
+        return
+
+    history = read_local_session_history(
+        cfg,
+        gw=result.record.gw,
+        session=result.record.session,
+        limit=limit,
+    )
+    if not history:
+        click.echo("session history not available locally", err=True)
+        ctx.exit(1)
+        return
+
+    if as_json:
+        click.echo(json.dumps(history, indent=2))
+        return
+
+    for item in history:
+        ts = item.get("ts", "")
+        if ts:
+            click.echo(f"[{ts}] {item.get('role', '?')}: {item.get('text', '')}")
+        else:
+            click.echo(f"{item.get('role', '?')}: {item.get('text', '')}")
+
+
 @click.command()
 @click.pass_context
 def roster(ctx: click.Context) -> None:
@@ -359,3 +439,166 @@ def roster(ctx: click.Context) -> None:
                 click.echo(f"  - {h}")
         else:
             click.echo("  (no handlers)")
+
+
+async def _send_discord_action(
+    cfg: HiveConfig,
+    *,
+    to_node: str,
+    action: str,
+    payload: dict,
+    wait_timeout: float,
+) -> Envelope | None:
+    """Send a discord.* deterministic action and wait for correlated response."""
+    env = create_envelope(
+        from_=cfg.node_id,
+        to=to_node,
+        ch="command",
+        text=json.dumps(payload),
+        urgency="now",
+        action=action,
+    )
+    topic = f"{cfg.topic_prefix}/{to_node}/command"
+    return await _publish_and_wait(cfg, topic, json.dumps(env.to_json()), env.id, wait_timeout)
+
+
+def _print_discord_response(ctx: click.Context, response: Envelope | None, wait_timeout: float) -> None:
+    if response is None:
+        click.echo(f"timeout: no response after {wait_timeout}s", err=True)
+        ctx.exit(1)
+        return
+
+    text = response.text or ""
+    if text.startswith("FAILED:"):
+        click.echo(text, err=True)
+        ctx.exit(1)
+        return
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        click.echo(text)
+        return
+
+    click.echo(json.dumps(parsed, indent=2))
+
+
+@click.group(name="discord")
+def discord() -> None:
+    """Deterministic Discord master RPC actions via hive-daemon."""
+
+
+@discord.command(name="thread-send")
+@click.option("--to", "to_node", required=True, help="Target node (local daemon may proxy to master).")
+@click.option("--thread-id", required=True, help="Discord thread channel id.")
+@click.option("--content", required=True, help="Message content.")
+@click.option("--wait", "wait_timeout", default=20.0, show_default=True, type=float, help="Wait timeout (seconds).")
+@click.pass_context
+def discord_thread_send(ctx: click.Context, to_node: str, thread_id: str, content: str, wait_timeout: float) -> None:
+    cfg = _get_config(ctx)
+    response = asyncio.run(
+        _send_discord_action(
+            cfg,
+            to_node=to_node,
+            action="discord.thread.send",
+            payload={"thread_id": thread_id, "content": content},
+            wait_timeout=wait_timeout,
+        )
+    )
+    _print_discord_response(ctx, response, wait_timeout)
+
+
+@discord.command(name="thread-history")
+@click.option("--to", "to_node", required=True, help="Target node (local daemon may proxy to master).")
+@click.option("--thread-id", required=True, help="Discord thread channel id.")
+@click.option("--limit", default=20, show_default=True, type=int, help="Max messages (1-100).")
+@click.option("--wait", "wait_timeout", default=20.0, show_default=True, type=float, help="Wait timeout (seconds).")
+@click.pass_context
+def discord_thread_history(ctx: click.Context, to_node: str, thread_id: str, limit: int, wait_timeout: float) -> None:
+    cfg = _get_config(ctx)
+    response = asyncio.run(
+        _send_discord_action(
+            cfg,
+            to_node=to_node,
+            action="discord.thread.history",
+            payload={"thread_id": thread_id, "limit": max(1, min(limit, 100))},
+            wait_timeout=wait_timeout,
+        )
+    )
+    _print_discord_response(ctx, response, wait_timeout)
+
+
+@discord.command(name="thread-resolve")
+@click.option("--to", "to_node", required=True, help="Target node (local daemon may proxy to master).")
+@click.option("--thread-id", default=None, help="Discord thread channel id.")
+@click.option("--thread-name", default=None, help="Thread name to resolve.")
+@click.option("--wait", "wait_timeout", default=20.0, show_default=True, type=float, help="Wait timeout (seconds).")
+@click.pass_context
+def discord_thread_resolve(
+    ctx: click.Context,
+    to_node: str,
+    thread_id: str | None,
+    thread_name: str | None,
+    wait_timeout: float,
+) -> None:
+    if not thread_id and not thread_name:
+        raise click.UsageError("Provide --thread-id or --thread-name")
+
+    cfg = _get_config(ctx)
+    payload: dict[str, str] = {}
+    if thread_id:
+        payload["thread_id"] = thread_id
+    if thread_name:
+        payload["thread_name"] = thread_name
+
+    response = asyncio.run(
+        _send_discord_action(
+            cfg,
+            to_node=to_node,
+            action="discord.thread.resolve",
+            payload=payload,
+            wait_timeout=wait_timeout,
+        )
+    )
+    _print_discord_response(ctx, response, wait_timeout)
+
+
+@discord.command(name="mention-resolve")
+@click.option("--to", "to_node", required=True, help="Target node (local daemon may proxy to master).")
+@click.option("--channel", default=None, help="Channel mapping name from discord_master.channels[].")
+@click.option("--query", default=None, help="Name query for member/role search.")
+@click.option("--mention-target", default=None, help="Explicit target (user:<id>, role:<id>, <@id>, <@&id>).")
+@click.option("--mention-type", default="auto", type=click.Choice(["auto", "user", "role"]), show_default=True)
+@click.option("--wait", "wait_timeout", default=20.0, show_default=True, type=float, help="Wait timeout (seconds).")
+@click.pass_context
+def discord_mention_resolve(
+    ctx: click.Context,
+    to_node: str,
+    channel: str | None,
+    query: str | None,
+    mention_target: str | None,
+    mention_type: str,
+    wait_timeout: float,
+) -> None:
+    if not any([channel, query, mention_target]):
+        raise click.UsageError("Provide at least one of --channel, --query, or --mention-target")
+
+    cfg = _get_config(ctx)
+    payload: dict[str, str] = {"mention_type": mention_type}
+    if channel:
+        payload["channel"] = channel
+    if query:
+        payload["query"] = query
+    if mention_target:
+        payload["mention_target"] = mention_target
+
+    response = asyncio.run(
+        _send_discord_action(
+            cfg,
+            to_node=to_node,
+            action="discord.mention.resolve",
+            payload=payload,
+            wait_timeout=wait_timeout,
+        )
+    )
+    _print_discord_response(ctx, response, wait_timeout)

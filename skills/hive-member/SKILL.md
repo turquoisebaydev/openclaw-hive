@@ -160,3 +160,27 @@ Use the information. Don't reply to responses.
 - **Don't reply unnecessarily** — if no info was requested, stay silent
 - **Don't use `--wait` by default** — fire-and-forget is almost always right
 - **Don't send secrets over hive** — use references ("pull from 1Password")
+
+## Discord Master RPC (deterministic)
+
+When a node has no Discord token, use `discord.*` actions and let hive proxy to the configured Discord master.
+
+```bash
+# Resolve thread
+hive-cli send --to <node> --ch command --action discord.thread.resolve \
+  --text '{"thread_name":"QMD-proj"}' --wait 10
+
+# Resolve mention token
+hive-cli send --to <node> --ch command --action discord.mention.resolve \
+  --text '{"channel":"qmd"}' --wait 10
+
+# Send message in thread
+hive-cli send --to <node> --ch command --action discord.thread.send \
+  --text '{"thread_id":"1487915581649981451","content":"<@...> hello"}' --wait 10
+
+# Read thread history
+hive-cli send --to <node> --ch command --action discord.thread.history \
+  --text '{"thread_id":"1487915581649981451","limit":20}' --wait 10
+```
+
+These actions are deterministic daemon paths (no LLM turn required).
