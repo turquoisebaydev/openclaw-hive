@@ -789,10 +789,15 @@ def hive_thread_send(
             )
         )
         parsed_resolve = _discord_response_json(resolve_response)
-        if parsed_resolve and parsed_resolve.get("ok") is True:
-            mention = ((parsed_resolve.get("thread") or {}).get("mention") or "").strip()
-            if mention and mention not in final_message:
-                final_message = f"{mention} {final_message}"
+        if not parsed_resolve or not parsed_resolve.get("ok"):
+            raise click.ClickException(f"Failed to resolve thread for mention: {parsed_resolve}")
+        
+        mention = ((parsed_resolve.get("thread") or {}).get("mention") or "").strip()
+        if not mention:
+            raise click.ClickException(f"Cannot determine mention for thread/channel '{name or thread_id}' (id: {thread_id}). Use --no-auto-mention to send without mention.")
+        
+        if mention not in final_message:
+            final_message = f"{mention} {final_message}"
 
     send_response = asyncio.run(
         _send_discord_action(
