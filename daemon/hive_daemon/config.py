@@ -118,7 +118,7 @@ class DiscordMasterChannelConfig:
     gateway: str | None = None
     mention_target: str | None = None
     mention_type: str = "auto"
-    thread_suffix: str = "-proj"
+    thread_suffix: str = "-init"
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,7 +132,7 @@ class DiscordMasterConfig:
     api_base: str = "https://discord.com/api/v10"
     request_timeout_sec: int = 10
     default_parent_suffix: str = "-hive"
-    default_thread_suffix: str = "-proj"
+    default_thread_suffix: str = "-init"
     channels: list[DiscordMasterChannelConfig] = field(default_factory=list)
 
 
@@ -260,7 +260,7 @@ def load_config(path: Path) -> HiveConfig:
                 gateway=channel.get("gateway") or channel.get("gw"),
                 mention_target=channel.get("mention_target") or channel.get("mention"),
                 mention_type=channel.get("mention_type") or channel.get("mention_kind", "auto"),
-                thread_suffix=channel.get("thread_suffix") or channel.get("thread_name_suffix", "-proj"),
+                thread_suffix=channel.get("thread_suffix") or channel.get("thread_name_suffix", "-init"),
             )
         )
 
@@ -272,7 +272,7 @@ def load_config(path: Path) -> HiveConfig:
         api_base=discord_master_section.get("api_base", "https://discord.com/api/v10"),
         request_timeout_sec=discord_master_section.get("request_timeout_sec", 10),
         default_parent_suffix=discord_master_section.get("default_parent_suffix", "-hive"),
-        default_thread_suffix=discord_master_section.get("default_thread_suffix", "-proj"),
+        default_thread_suffix=discord_master_section.get("default_thread_suffix", "-init"),
         channels=discord_master_channels,
     )
 

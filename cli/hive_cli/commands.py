@@ -626,7 +626,7 @@ def _discord_response_json(response: Envelope | None) -> dict | None:
 @click.command(name="hive-thread-list")
 @click.option("--to", "to_node", default=None, help="Target node (defaults to local node id).")
 @click.option("--parent-suffix", default=None, help="Parent channel suffix filter (default from daemon config, usually -hive).")
-@click.option("--thread-suffix", default=None, help="Thread suffix filter (default from daemon config, usually -proj).")
+@click.option("--thread-suffix", default=None, help="Thread suffix filter (default from daemon config, usually -init).")
 @click.option("--wait", "wait_timeout", default=20.0, show_default=True, type=float, help="Wait timeout (seconds).")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
 @click.pass_context
@@ -638,7 +638,7 @@ def hive_thread_list(
     wait_timeout: float,
     as_json: bool,
 ) -> None:
-    """List hive project threads (-proj under -hive) with mention user ids."""
+    """List hive threads (default: -init under -hive channels) with mention user ids."""
     cfg = _get_config(ctx)
     target = to_node or cfg.node_id
     payload: dict[str, str] = {}
@@ -679,12 +679,13 @@ def hive_thread_list(
         return
 
     click.echo(f"filters: parent_suffix={parsed.get('parent_suffix')} thread_suffix={parsed.get('thread_suffix')}")
-    click.echo(f"{'THREAD':<26} {'THREAD_ID':<20} {'PARENT':<18} {'MENTION_USER_ID':<20}")
-    click.echo("-" * 94)
+    click.echo(f"{'NAME':<26} {'ID':<20} {'TYPE':<9} {'PARENT':<18} {'MENTION_USER_ID':<20}")
+    click.echo("-" * 103)
     for t in threads:
         click.echo(
             f"{str(t.get('name',''))[:26]:<26} {str(t.get('id','')):<20} "
-            f"{str(t.get('parent_name',''))[:18]:<18} {str(t.get('mention_user_id') or '-'): <20}"
+            f"{str(t.get('type','thread'))[:9]:<9} "
+            f"{str(t.get('parent_name') or '-')[:18]:<18} {str(t.get('mention_user_id') or '-'): <20}"
         )
 
 

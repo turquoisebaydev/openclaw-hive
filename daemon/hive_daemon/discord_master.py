@@ -177,7 +177,7 @@ class DiscordMasterService:
         parent_id = match.get("parent_id")
         parent = self._request_json("GET", f"/channels/{parent_id}") if parent_id else {}
         parent_name = str(parent.get("name") or "")
-        mention_info = self._channel_mention_info(parent_name, self.config.default_parent_suffix, thread.get("name"), self.config.default_thread_suffix)
+        mention_info = self._channel_mention_info(parent_name, self.config.default_parent_suffix, match.get("name"), self.config.default_thread_suffix)
         return {
             "ok": True,
             "thread": {
@@ -194,14 +194,39 @@ class DiscordMasterService:
     def _thread_list(self, payload: dict[str, Any]) -> dict[str, Any]:
         parent_suffix = str(payload.get("parent_suffix") or payload.get("parentSuffix") or self.config.default_parent_suffix)
         thread_suffix = str(payload.get("thread_suffix") or payload.get("threadSuffix") or self.config.default_thread_suffix)
+        include_channels = payload.get("include_channels", True)
 
-        channels = self._request_json("GET", f"/guilds/{self.config.guild_id}/channels")
-        channel_by_id = {str(c.get("id")): c for c in channels if isinstance(c, dict) and c.get("id")}
+        guild_channels = self._request_json("GET", f"/guilds/{self.config.guild_id}/channels")
+        channel_by_id = {str(c.get("id")): c for c in guild_channels if isinstance(c, dict) and c.get("id")}
 
+        items: list[dict[str, Any]] = []
+
+        # Top-level guild channels matching thread_suffix (e.g. *-proj channels).
+        if include_channels:
+            _TEXT_CHANNEL_TYPE = 0
+            for c in guild_channels:
+                if not isinstance(c, dict) or c.get("type") != _TEXT_CHANNEL_TYPE:
+                    continue
+                cname = str(c.get("name") or "")
+                if thread_suffix and not cname.endswith(thread_suffix):
+                    continue
+                mention_info = self._channel_mention_info(cname, thread_suffix)
+                items.append(
+                    {
+                        "id": c.get("id"),
+                        "name": cname,
+                        "parent_id": None,
+                        "parent_name": None,
+                        "type": "channel",
+                        "archived": False,
+                        **mention_info,
+                    }
+                )
+
+        # Active threads within parent channels matching parent_suffix.
         active = self._request_json("GET", f"/guilds/{self.config.guild_id}/threads/active")
         threads = active.get("threads", []) if isinstance(active, dict) else []
 
-        items: list[dict[str, Any]] = []
         for t in threads:
             tname = str(t.get("name") or "")
             parent_id = str(t.get("parent_id") or "")
@@ -218,12 +243,13 @@ class DiscordMasterService:
                     "name": tname,
                     "parent_id": parent_id,
                     "parent_name": pname,
+                    "type": "thread",
                     "archived": bool((t.get("thread_metadata") or {}).get("archived", False)),
                     **mention_info,
                 }
             )
 
-        items.sort(key=lambda x: (x.get("parent_name") or "", x.get("name") or ""))
+        items.sort(key=lambda x: (x.get("type") or "", x.get("parent_name") or "", x.get("name") or ""))
         return {
             "ok": True,
             "count": len(items),

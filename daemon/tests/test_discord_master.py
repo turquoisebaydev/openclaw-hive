@@ -128,13 +128,13 @@ def test_thread_list_filters_and_includes_mention(monkeypatch):
     def fake_request(method, path, data=None):
         if path.endswith('/channels'):
             return [
-                {"id": "c1", "name": "qmd-hive"},
-                {"id": "c2", "name": "random"},
+                {"id": "c1", "name": "qmd-hive", "type": 0},
+                {"id": "c2", "name": "random", "type": 0},
             ]
         if path.endswith('/threads/active'):
             return {
                 "threads": [
-                    {"id": "t1", "name": "QMD-proj", "parent_id": "c1", "thread_metadata": {}},
+                    {"id": "t1", "name": "deploy-dashboard-init", "parent_id": "c1", "thread_metadata": {}},
                     {"id": "t2", "name": "other", "parent_id": "c1", "thread_metadata": {}},
                 ]
             }
@@ -151,18 +151,19 @@ def test_thread_list_filters_and_includes_mention(monkeypatch):
 
     out = svc.execute(env)
     assert out["ok"] is True
-    assert out["count"] == 1
-    assert out["threads"][0]["name"] == "QMD-proj"
-    assert out["threads"][0]["mention_user_id"] == "123"
+    threads = [t for t in out["threads"] if t["type"] == "thread"]
+    assert len(threads) == 1
+    assert threads[0]["name"] == "deploy-dashboard-init"
+    assert threads[0]["mention_user_id"] == "123"
 
 def test_thread_list_mention_falls_back_to_thread_base(monkeypatch):
     svc = _service()
 
     def fake_request(method, path, data=None):
         if path.endswith('/channels'):
-            return [{"id": "c1", "name": "hermes-hive"}]
+            return [{"id": "c1", "name": "hermes-hive", "type": 0}]
         if path.endswith('/threads/active'):
-            return {"threads": [{"id": "t1", "name": "QMD-proj", "parent_id": "c1", "thread_metadata": {}}]}
+            return {"threads": [{"id": "t1", "name": "qmd-init", "parent_id": "c1", "thread_metadata": {}}]}
         raise AssertionError(path)
 
     monkeypatch.setattr(DiscordMasterService, "_request_json", lambda self, method, path, data=None: fake_request(method, path, data))
@@ -176,16 +177,17 @@ def test_thread_list_mention_falls_back_to_thread_base(monkeypatch):
 
     out = svc.execute(env)
     assert out["ok"] is True
-    assert out["threads"][0]["mention_user_id"] == "123"
+    threads = [t for t in out["threads"] if t["type"] == "thread"]
+    assert threads[0]["mention_user_id"] == "123"
 
 def test_thread_list_mention_from_parent_hive_convention(monkeypatch):
     svc = _service(channels=[])
 
     def fake_request(method, path, data=None):
         if path.endswith('/channels'):
-            return [{"id": "c1", "name": "hermes-hive"}]
+            return [{"id": "c1", "name": "hermes-hive", "type": 0}]
         if path.endswith('/threads/active'):
-            return {"threads": [{"id": "t1", "name": "Mission Control-proj", "parent_id": "c1", "thread_metadata": {}}]}
+            return {"threads": [{"id": "t1", "name": "mission-control-init", "parent_id": "c1", "thread_metadata": {}}]}
         if '/members/search' in path:
             return [{"user": {"id": "1482865686102671481", "username": "Hermes"}}]
         if path.endswith('/roles'):
@@ -203,6 +205,98 @@ def test_thread_list_mention_from_parent_hive_convention(monkeypatch):
 
     out = svc.execute(env)
     assert out["ok"] is True
-    t = out["threads"][0]
+    threads = [t for t in out["threads"] if t["type"] == "thread"]
+    t = threads[0]
     assert t["mention"] == "<@1482865686102671481>"
     assert t["mention_user_id"] == "1482865686102671481"
+
+
+def test_thread_list_includes_proj_channels(monkeypatch):
+    """Top-level *-proj channels appear as type=channel when thread_suffix matches."""
+    svc = _service()
+
+    def fake_request(method, path, data=None):
+        if path.endswith('/channels'):
+            return [
+                {"id": "c1", "name": "pg-hive", "type": 0},
+                {"id": "c2", "name": "openclaw-pg-proj", "type": 0},
+                {"id": "c3", "name": "random", "type": 0},
+                {"id": "c4", "name": "voice-chat", "type": 2},  # voice, not text
+            ]
+        if path.endswith('/threads/active'):
+            return {"threads": []}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(DiscordMasterService, "_request_json", lambda self, method, path, data=None: fake_request(method, path, data))
+    env = create_envelope(
+        from_="mini1",
+        to="turq",
+        ch="command",
+        action="discord.thread.list",
+        text=json.dumps({"thread_suffix": "-proj"}),
+    )
+
+    out = svc.execute(env)
+    assert out["ok"] is True
+    assert out["count"] == 1
+    assert out["threads"][0]["name"] == "openclaw-pg-proj"
+    assert out["threads"][0]["type"] == "channel"
+    assert out["threads"][0]["parent_id"] is None
+
+
+def test_thread_list_default_excludes_proj_channels(monkeypatch):
+    """Default -init suffix should not return -proj top-level channels."""
+    svc = _service()
+
+    def fake_request(method, path, data=None):
+        if path.endswith('/channels'):
+            return [
+                {"id": "c1", "name": "pg-hive", "type": 0},
+                {"id": "c2", "name": "openclaw-pg-proj", "type": 0},
+            ]
+        if path.endswith('/threads/active'):
+            return {"threads": [
+                {"id": "t1", "name": "deploy-init", "parent_id": "c1", "thread_metadata": {}},
+            ]}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(DiscordMasterService, "_request_json", lambda self, method, path, data=None: fake_request(method, path, data))
+    env = create_envelope(
+        from_="mini1",
+        to="turq",
+        ch="command",
+        action="discord.thread.list",
+        text="{}",
+    )
+
+    out = svc.execute(env)
+    assert out["ok"] is True
+    # Only the -init thread, not the -proj channel
+    assert out["count"] == 1
+    assert out["threads"][0]["name"] == "deploy-init"
+    assert out["threads"][0]["type"] == "thread"
+
+
+def test_thread_list_include_channels_false(monkeypatch):
+    """include_channels=false suppresses top-level channel scanning."""
+    svc = _service()
+
+    def fake_request(method, path, data=None):
+        if path.endswith('/channels'):
+            return [{"id": "c1", "name": "openclaw-pg-proj", "type": 0}]
+        if path.endswith('/threads/active'):
+            return {"threads": []}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(DiscordMasterService, "_request_json", lambda self, method, path, data=None: fake_request(method, path, data))
+    env = create_envelope(
+        from_="mini1",
+        to="turq",
+        ch="command",
+        action="discord.thread.list",
+        text=json.dumps({"thread_suffix": "-proj", "include_channels": False}),
+    )
+
+    out = svc.execute(env)
+    assert out["ok"] is True
+    assert out["count"] == 0
