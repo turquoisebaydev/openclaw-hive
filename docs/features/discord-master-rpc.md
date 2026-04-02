@@ -86,17 +86,35 @@ hive-cli send --to mini1 --ch command \
 - If neither local token nor `proxy_to` is configured, daemon returns a deterministic failure response.
 
 
+## Discord Channel/Thread Model
+
+See [discord-channel-model.md](../discord-channel-model.md) for the full model:
+
+- **Hive channels** (`*-hive`): Parent channels containing initiative threads
+- **Project channels** (`*-proj`): Top-level channels for long-running projects
+- **Initiative threads** (`*-init`): Temporary threads within hive channels
+
+### Alias Mapping
+
+| Alias | Gateway |
+|-------|---------|
+| `pg` | juniorgw (turq-playground) |
+| `turq` | turqgw (Mac mini) |
+| `hermes` | Hermes |
+
 ## High-level caller commands (complexity-free)
 
 These wrappers are for humans/agents that just want "hive threads" and "send hive message".
 
-### List hive project threads (defaults: `-hive` + `-proj`)
+### List hive threads
 
 ```bash
 hive-cli hive-thread-list --to <node>
 ```
 
 - Defaults come from daemon config (`discord_master.default_parent_suffix`, `discord_master.default_thread_suffix`).
+- Default suffixes: `-hive` for parent channels, `-proj` for project threads
+- Use `--thread-suffix "-init"` to list only initiative threads
 - Output includes `mention_user_id` so callers can inspect who would be pinged.
 
 ### Send to a hive thread with automatic mention
