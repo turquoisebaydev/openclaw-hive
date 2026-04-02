@@ -691,7 +691,8 @@ def hive_thread_list(
 
 @click.command(name="hive-thread-send")
 @click.option("--to", "to_node", default=None, help="Target node (defaults to local node id).")
-@click.option("--thread-id", required=True, help="Discord thread channel id.")
+@click.option("--thread-id", default=None, help="Discord thread/channel id (use if --name is ambiguous or not found).")
+@click.option("--name", default=None, help="Thread/channel name to resolve (e.g., 'monitoring-init' or 'openclaw-pg-proj').")
 @click.option("--message", required=True, help="Message body to send.")
 @click.option("--no-auto-mention", is_flag=True, help="Disable automatic mention prefixing.")
 @click.option("--wait", "wait_timeout", default=20.0, show_default=True, type=float, help="Wait timeout (seconds).")
@@ -700,19 +701,82 @@ def hive_thread_list(
 def hive_thread_send(
     ctx: click.Context,
     to_node: str | None,
-    thread_id: str,
+    thread_id: str | None,
+    name: str | None,
     message: str,
     no_auto_mention: bool,
     wait_timeout: float,
     as_json: bool,
 ) -> None:
-    """Send to a hive thread with automatic mention resolution."""
+    """Send to a hive thread/channel with automatic mention resolution.
+
+    Use --name to target by name (e.g., 'monitoring-init' or 'openclaw-pg-proj').
+    If name resolution fails or is ambiguous, use --thread-id with the exact Discord ID.
+    """
     cfg = _get_config(ctx)
     target = to_node or cfg.node_id
+
+    # Validate: either --name or --thread-id must be provided
+    if not name and not thread_id:
+        raise click.UsageError("Either --name or --thread-id is required")
+    if name and thread_id:
+        raise click.UsageError("Use either --name or --thread-id, not both")
 
     final_message = message.strip()
     if not final_message:
         raise click.UsageError("--message must be non-empty")
+
+    # Resolve --name to thread_id if provided
+    if name and not thread_id:
+        # Search for the name in ALL hive threads and channels (ignore suffix filters)
+        # We need to search both -init threads and -proj channels
+        list_response = asyncio.run(
+            _send_discord_action(
+                cfg,
+                to_node=target,
+                action="discord.thread.list",
+                payload={
+                    "include_channels": True,  # Include top-level channels
+                    "parent_suffix": "-hive",  # Search hive channels
+                    "thread_suffix": "-init",  # Also search -init threads
+                },
+                wait_timeout=wait_timeout,
+            )
+        )
+        parsed_list = _discord_response_json(list_response)
+        if not parsed_list or not parsed_list.get("ok"):
+            raise click.ClickException(f"Failed to list threads for name resolution: {parsed_list}")
+
+        # First search in the default suffix results
+        matches = [t for t in parsed_list.get("threads", []) if t.get("name") == name]
+
+        # If not found, also search -proj channels
+        if not matches:
+            list_response_proj = asyncio.run(
+                _send_discord_action(
+                    cfg,
+                    to_node=target,
+                    action="discord.thread.list",
+                    payload={
+                        "include_channels": True,
+                        "parent_suffix": "-hive",
+                        "thread_suffix": "-proj",  # Search -proj channels
+                    },
+                    wait_timeout=wait_timeout,
+                )
+            )
+            parsed_list_proj = _discord_response_json(list_response_proj)
+            if parsed_list_proj and parsed_list_proj.get("ok"):
+                matches = [t for t in parsed_list_proj.get("threads", []) if t.get("name") == name]
+
+        if not matches:
+            raise click.ClickException(f"No thread/channel found with name '{name}'")
+        if len(matches) > 1:
+            match_names = [m.get("name") for m in matches]
+            raise click.ClickException(f"Ambiguous name '{name}': found {len(matches)} matches: {', '.join(match_names)}")
+
+        thread_id = matches[0].get("id")
+        click.echo(f"resolved '{name}' -> {thread_id}")
 
     if not no_auto_mention:
         resolve_response = asyncio.run(
