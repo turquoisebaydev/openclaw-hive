@@ -214,8 +214,10 @@ def send(ctx: click.Context, to_node: str | None, to_session: str | None, channe
         to_node = result.record.gw
         to_session = result.record.session
 
-    # Use corr = envelope id so the responder's create_reply sets corr automatically
-    env = create_envelope(
+    # Use corr = envelope id so the responder's create_reply sets corr automatically.
+    # Compatibility note: older hive_daemon.envelope.create_envelope() builds do not
+    # accept target_session yet. Keep send() working across mixed CLI/daemon versions.
+    env_kwargs = dict(
         from_=cfg.node_id,
         to=to_node,
         ch=channel,
@@ -223,8 +225,12 @@ def send(ctx: click.Context, to_node: str | None, to_session: str | None, channe
         urgency=urgency,
         ttl=ttl,
         action=action,
-        target_session=to_session,
     )
+    if to_session is not None:
+        import inspect
+        if "target_session" in inspect.signature(create_envelope).parameters:
+            env_kwargs["target_session"] = to_session
+    env = create_envelope(**env_kwargs)
     topic = f"{cfg.topic_prefix}/{to_node}/{channel}"
     payload = json.dumps(env.to_json())
 
