@@ -57,6 +57,10 @@ After:  every 1-5 min → daemon script (0 tokens) → "no" → free
 
 See [docs/protocol.md](docs/protocol.md) for the full design.
 
+## Release Notes
+
+- [v0.1.1 — 2026-04-04](docs/releases/2026-04-04-v0.1.1.md)
+
 ## Quick Start
 
 *Coming soon — Phase 1 implementation in progress.*
