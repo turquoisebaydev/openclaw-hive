@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hive-cli"
-version = "0.1.0"
+version = "0.1.1"
 description = "CLI tool for OpenClaw hive coordination"
 requires-python = ">=3.11"
 dependencies = [
     "aiomqtt>=2.0",
     "click>=8.0",
-    "hive-daemon",
+    "hive-daemon>=0.1.1,<0.2.0",
 ]
 
 [project.optional-dependencies]

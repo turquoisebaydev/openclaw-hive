@@ -49,7 +49,7 @@ class Envelope:
     """Hive protocol v1 message envelope.
 
     Required fields: v, id, ts, from_, to, ch, urgency, text.
-    Optional fields: corr, reply_to, ttl, action.
+    Optional fields: corr, reply_to, ttl, action, target_session.
 
     The ``from_`` field maps to/from the JSON key ``"from"`` (a Python keyword).
     """
@@ -66,6 +66,7 @@ class Envelope:
     reply_to: str | None = None
     ttl: int | None = None
     action: str | None = None
+    target_session: str | None = None
 
     def __post_init__(self) -> None:
         if self.v != SCHEMA_VERSION:
@@ -111,6 +112,8 @@ class Envelope:
             d["ttl"] = self.ttl
         if self.action is not None:
             d["action"] = self.action
+        if self.target_session is not None:
+            d["targetSession"] = self.target_session
         return d
 
     @classmethod
@@ -138,6 +141,7 @@ class Envelope:
             reply_to=data.get("replyTo"),
             ttl=data.get("ttl"),
             action=data.get("action"),
+            target_session=data.get("targetSession"),
         )
 
 
@@ -151,6 +155,7 @@ def create_envelope(
     corr: str | None = None,
     ttl: int | None = None,
     action: str | None = None,
+    target_session: str | None = None,
 ) -> Envelope:
     """Create a new envelope with auto-generated id and timestamp."""
     return Envelope(
@@ -165,6 +170,7 @@ def create_envelope(
         corr=corr,
         ttl=ttl,
         action=action,
+        target_session=target_session,
     )
 
 
