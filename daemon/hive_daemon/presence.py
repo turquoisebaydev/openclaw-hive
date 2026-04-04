@@ -542,14 +542,10 @@ async def build_local_presence_records(
 
 
 def presence_mqtt_topic(prefix: str, record: PresenceRecord) -> str:
-    """Build the MQTT topic for a presence record."""
-    gw = (record.gw or "").strip().lower()
-    if gw in {"turq", "mini1"}:
-        server = "turq"
-    elif gw.startswith("turqette"):
-        server = "turqette"
-    elif gw == "pg1" or gw.startswith("pg"):
-        server = "pg"
-    else:
-        server = gw or record.gw
+    """Build the MQTT topic for a presence record.
+
+    Server segment is derived directly from the gateway id to avoid hardcoded
+    topology assumptions (e.g. pg1/turqette/mini1).
+    """
+    server = ((record.gw or "").strip().lower() or "unknown")
     return f"{prefix}/presence/{server}/gw/{record.gw}/{record.session}"
