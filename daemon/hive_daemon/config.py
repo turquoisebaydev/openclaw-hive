@@ -122,6 +122,15 @@ class DiscordMasterChannelConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class DiscordMasterAliasConfig:
+    """Discord-wide mention alias mapping (e.g. pg -> user:123)."""
+
+    name: str
+    mention_target: str
+    mention_type: str = "auto"
+
+
+@dataclass(frozen=True, slots=True)
 class DiscordMasterConfig:
     """Discord bot API settings for the Discord master daemon."""
 
@@ -134,6 +143,7 @@ class DiscordMasterConfig:
     default_parent_suffix: str = "-hive"
     default_thread_suffix: str = "-init"
     channels: list[DiscordMasterChannelConfig] = field(default_factory=list)
+    aliases: list[DiscordMasterAliasConfig] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,6 +274,42 @@ def load_config(path: Path) -> HiveConfig:
             )
         )
 
+    discord_master_aliases: list[DiscordMasterAliasConfig] = []
+    aliases_section = discord_master_section.get("aliases", {})
+    if isinstance(aliases_section, dict):
+        for alias, raw in aliases_section.items():
+            mention_target = None
+            mention_type = "auto"
+            if isinstance(raw, str):
+                mention_target = raw
+            elif isinstance(raw, dict):
+                mention_target = raw.get("mention_target") or raw.get("target") or raw.get("mention")
+                mention_type = raw.get("mention_type") or raw.get("mention_kind", "auto")
+            if not mention_target:
+                raise KeyError(f"discord_master.aliases.{alias} requires mention_target/target")
+            discord_master_aliases.append(
+                DiscordMasterAliasConfig(
+                    name=str(alias),
+                    mention_target=str(mention_target),
+                    mention_type=str(mention_type),
+                )
+            )
+    elif isinstance(aliases_section, list):
+        for alias in aliases_section:
+            if not isinstance(alias, dict):
+                continue
+            name = alias.get("name") or alias.get("alias")
+            mention_target = alias.get("mention_target") or alias.get("target") or alias.get("mention")
+            if not name or not mention_target:
+                raise KeyError("discord_master.aliases[] requires name and mention_target/target")
+            discord_master_aliases.append(
+                DiscordMasterAliasConfig(
+                    name=str(name),
+                    mention_target=str(mention_target),
+                    mention_type=str(alias.get("mention_type") or alias.get("mention_kind", "auto")),
+                )
+            )
+
     discord_master = DiscordMasterConfig(
         enabled=discord_master_section.get("enabled", False),
         guild_id=discord_master_section.get("guild_id"),
@@ -274,6 +320,7 @@ def load_config(path: Path) -> HiveConfig:
         default_parent_suffix=discord_master_section.get("default_parent_suffix", "-hive"),
         default_thread_suffix=discord_master_section.get("default_thread_suffix", "-init"),
         channels=discord_master_channels,
+        aliases=discord_master_aliases,
     )
 
     return HiveConfig(

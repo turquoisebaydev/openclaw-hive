@@ -101,6 +101,62 @@ class DiscordMasterService:
             return parent_name[: -len(parent_suffix)]
         return parent_name
 
+    def _iter_alias_candidates(self, value: str | None) -> list[str]:
+        raw = (value or "").strip()
+        if not raw:
+            return []
+
+        out: list[str] = []
+
+        def add(v: str | None) -> None:
+            vv = (v or "").strip()
+            if vv and vv not in out:
+                out.append(vv)
+
+        add(raw)
+
+        suffixes = {
+            self.config.default_parent_suffix,
+            self.config.default_thread_suffix,
+            "-proj",
+            "-hive",
+            "-init",
+        }
+        for sx in suffixes:
+            if sx and raw.endswith(sx):
+                add(raw[: -len(sx)])
+
+        for cand in list(out):
+            if "-" in cand:
+                add(cand.rsplit("-", 1)[-1])
+
+        return out
+
+    def _resolve_alias_mention(self, *values: str | None) -> dict[str, Any] | None:
+        aliases = {a.name.casefold(): a for a in self.config.aliases}
+        if not aliases:
+            return None
+
+        seen: set[str] = set()
+        for value in values:
+            for cand in self._iter_alias_candidates(value):
+                key = cand.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                alias_cfg = aliases.get(key)
+                if not alias_cfg:
+                    continue
+                mention = self._mention_from_target(alias_cfg.mention_target, alias_cfg.mention_type)
+                if mention:
+                    return {
+                        "mention": mention,
+                        "mention_user_id": self._user_id_from_target(alias_cfg.mention_target),
+                        "mention_target": alias_cfg.mention_target,
+                        "mention_source": f"alias:{alias_cfg.name}",
+                    }
+        return None
+
     def _channel_mention_info(self, parent_name: str, parent_suffix: str, thread_name: str | None = None, thread_suffix: str | None = None) -> dict[str, Any]:
         candidates = []
         parent_base = self._base_channel_name(parent_name, parent_suffix)
@@ -114,6 +170,10 @@ class DiscordMasterService:
             if thread_base:
                 candidates.append(thread_base)
 
+        alias_info = self._resolve_alias_mention(parent_name, parent_base, thread_name, *(candidates or []))
+        if alias_info:
+            return alias_info
+
         channel_cfg = next((c for c in self.config.channels if c.name.casefold() in {x.casefold() for x in candidates}), None)
         if channel_cfg and channel_cfg.mention_target:
             mention = self._mention_from_target(channel_cfg.mention_target, channel_cfg.mention_type)
@@ -122,6 +182,7 @@ class DiscordMasterService:
                 "mention": mention,
                 "mention_user_id": mention_user_id,
                 "mention_target": channel_cfg.mention_target,
+                "mention_source": f"channel:{channel_cfg.name}",
             }
 
         # Convention fallback: use parent base name (text before -hive),
@@ -136,9 +197,10 @@ class DiscordMasterService:
                     "mention": resolved.get("mention"),
                     "mention_user_id": resolved.get("id"),
                     "mention_target": f"auto:query:{parent_base}",
+                    "mention_source": "query_fallback",
                 }
 
-        return {"mention": None, "mention_user_id": None, "mention_target": None}
+        return {"mention": None, "mention_user_id": None, "mention_target": None, "mention_source": None}
 
 
     def _thread_resolve(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -323,6 +385,17 @@ class DiscordMasterService:
 
         channel_name = str(payload.get("channel") or "").strip()
         if channel_name:
+            alias_info = self._resolve_alias_mention(channel_name)
+            if alias_info and alias_info.get("mention"):
+                target = str(alias_info.get("mention_target") or "")
+                return {
+                    "ok": True,
+                    "source": str(alias_info.get("mention_source") or "alias"),
+                    "mention": alias_info["mention"],
+                    "mention_type": "role" if target.startswith("role:") else "user" if target.startswith("user:") else mention_type,
+                    "target": target,
+                }
+
             channel_cfg = next((c for c in self.config.channels if c.name == channel_name), None)
             if channel_cfg and channel_cfg.mention_target:
                 mention = self._mention_from_target(channel_cfg.mention_target, channel_cfg.mention_type)

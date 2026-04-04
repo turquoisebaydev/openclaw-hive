@@ -4,18 +4,20 @@ import json
 
 import pytest
 
-from hive_daemon.config import DiscordMasterChannelConfig, DiscordMasterConfig
+from hive_daemon.config import DiscordMasterAliasConfig, DiscordMasterChannelConfig, DiscordMasterConfig
 from hive_daemon.discord_master import DiscordMasterError, DiscordMasterService
 from hive_daemon.envelope import create_envelope
 
 
 def _service(**kwargs) -> DiscordMasterService:
     channels = kwargs.pop("channels", [DiscordMasterChannelConfig(name="qmd", mention_target="user:123")])
+    aliases = kwargs.pop("aliases", [])
     cfg = DiscordMasterConfig(
         enabled=True,
         guild_id="1476805337968279685",
         bot_token="tok",
         channels=channels,
+        aliases=aliases,
         **kwargs,
     )
     return DiscordMasterService(cfg)
@@ -300,3 +302,50 @@ def test_thread_list_include_channels_false(monkeypatch):
     out = svc.execute(env)
     assert out["ok"] is True
     assert out["count"] == 0
+
+
+def test_mention_resolve_from_discord_wide_alias():
+    svc = _service(
+        channels=[],
+        aliases=[DiscordMasterAliasConfig(name="pg", mention_target="user:1477047646769254643", mention_type="user")],
+    )
+    env = create_envelope(
+        from_="mini1",
+        to="turq",
+        ch="command",
+        action="discord.mention.resolve",
+        text=json.dumps({"channel": "hive-pg-proj"}),
+    )
+
+    out = svc.execute(env)
+    assert out["ok"] is True
+    assert out["source"] == "alias:pg"
+    assert out["mention"] == "<@1477047646769254643>"
+
+
+def test_thread_list_mention_uses_discord_wide_alias(monkeypatch):
+    svc = _service(
+        channels=[],
+        aliases=[DiscordMasterAliasConfig(name="pg", mention_target="user:1477047646769254643", mention_type="user")],
+    )
+
+    def fake_request(method, path, data=None):
+        if path.endswith('/channels'):
+            return [{"id": "c2", "name": "hive-pg-proj", "type": 0}]
+        if path.endswith('/threads/active'):
+            return {"threads": []}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(DiscordMasterService, "_request_json", lambda self, method, path, data=None: fake_request(method, path, data))
+    env = create_envelope(
+        from_="mini1",
+        to="turq",
+        ch="command",
+        action="discord.thread.list",
+        text=json.dumps({"thread_suffix": "-proj"}),
+    )
+
+    out = svc.execute(env)
+    assert out["ok"] is True
+    assert out["threads"][0]["mention"] == "<@1477047646769254643>"
+    assert out["threads"][0]["mention_source"] == "alias:pg"

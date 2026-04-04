@@ -493,3 +493,29 @@ def test_discord_master_config_loads(tmp_path: Path):
     assert len(cfg.discord_master.channels) == 1
     assert cfg.discord_master.channels[0].name == "qmd"
     assert cfg.discord_master.channels[0].mention_target == "user:123"
+
+
+DISCORD_MASTER_ALIASES_TOML = """\
+[node]
+id = "turq"
+
+[discord_master]
+enabled = true
+guild_id = "1476805337968279685"
+bot_token = "tok"
+
+[discord_master.aliases]
+pg = "user:1477047646769254643"
+qmd = { mention_target = "user:1482865686102671481", mention_type = "user" }
+"""
+
+
+def test_discord_master_aliases_load(tmp_path: Path):
+    f = tmp_path / "hive.toml"
+    f.write_text(DISCORD_MASTER_ALIASES_TOML)
+    cfg = load_config(f)
+    aliases = {a.name: a for a in cfg.discord_master.aliases}
+    assert aliases["pg"].mention_target == "user:1477047646769254643"
+    assert aliases["pg"].mention_type == "auto"
+    assert aliases["qmd"].mention_target == "user:1482865686102671481"
+    assert aliases["qmd"].mention_type == "user"
