@@ -277,14 +277,14 @@ def load_config(path: Path) -> HiveConfig:
     discord_master_aliases: list[DiscordMasterAliasConfig] = []
     aliases_section = discord_master_section.get("aliases", {})
     if isinstance(aliases_section, dict):
-        for alias, raw in aliases_section.items():
+        for alias, alias_value in aliases_section.items():
             mention_target = None
             mention_type = "auto"
-            if isinstance(raw, str):
-                mention_target = raw
-            elif isinstance(raw, dict):
-                mention_target = raw.get("mention_target") or raw.get("target") or raw.get("mention")
-                mention_type = raw.get("mention_type") or raw.get("mention_kind", "auto")
+            if isinstance(alias_value, str):
+                mention_target = alias_value
+            elif isinstance(alias_value, dict):
+                mention_target = alias_value.get("mention_target") or alias_value.get("target") or alias_value.get("mention")
+                mention_type = alias_value.get("mention_type") or alias_value.get("mention_kind", "auto")
             if not mention_target:
                 raise KeyError(f"discord_master.aliases.{alias} requires mention_target/target")
             discord_master_aliases.append(

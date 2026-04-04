@@ -519,3 +519,28 @@ def test_discord_master_aliases_load(tmp_path: Path):
     assert aliases["pg"].mention_type == "auto"
     assert aliases["qmd"].mention_target == "user:1482865686102671481"
     assert aliases["qmd"].mention_type == "user"
+
+
+
+def test_discord_master_aliases_string_entries_do_not_shadow_root_config(tmp_path: Path):
+    f = tmp_path / "hive.toml"
+    f.write_text("""[node]
+id = "turq"
+
+[discord_master]
+enabled = true
+guild_id = "1476805337968279685"
+bot_token = "tok"
+
+[discord_master.aliases]
+pg = "user:1477047646769254643"
+qmd = "user:1482865686102671481"
+
+[logging]
+level = "DEBUG"
+""")
+    cfg = load_config(f)
+    assert cfg.log_level == "DEBUG"
+    aliases = {a.name: a for a in cfg.discord_master.aliases}
+    assert aliases["pg"].mention_target == "user:1477047646769254643"
+    assert aliases["qmd"].mention_target == "user:1482865686102671481"
