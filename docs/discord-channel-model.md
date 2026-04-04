@@ -20,7 +20,7 @@ These channels contain temporary initiative threads. Each gateway has its own hi
 
 | Channel | Gateway | Alias |
 |---------|---------|-------|
-| `#pg-hive` | juniorgw (turq-playground) | `pg` |
+| `#pg-hive` | pg (turq-playground) | `pg` |
 | `#turq-hive` | turqgw (Mac mini) | `turq` |
 | `#hermes-hive` | Hermes | `hermes` |
 
@@ -28,7 +28,7 @@ These channels contain temporary initiative threads. Each gateway has its own hi
 Format: `<projectname>-<alias>-proj`
 
 These are **top-level channels** (not nested) for long-running projects. Examples:
-- `#openclaw-pg-proj` — OpenClaw development on juniorgw
+- `#openclaw-pg-proj` — OpenClaw development on pg
 - `#meural-turq-proj` — Meural work on turqgw
 - `#hive-cli-hermes-proj` — Hive CLI work on Hermes
 
@@ -43,13 +43,13 @@ Threads within hive channels for short-term work. Examples:
 
 | Alias | Full Name | Gateway/Node |
 |-------|-----------|--------------|
-| `pg` | juniorgw | turq-playground |
+| `pg` | pg | turq-playground |
 | `turq` | turqgw | Mac mini (turq) |
 | `hermes` | Hermes | Hermes node |
 
 ## Structure Examples
 
-### Example 1: juniorgw Hive Channel
+### Example 1: pg Hive Channel
 ```
 #pg-hive (channel)
 ├── thread: qmd-migration-init (short-term, auto-archives)
@@ -66,7 +66,7 @@ Threads within hive channels for short-term work. Examples:
 
 ### Example 3: Full Guild Structure
 ```
-#pg-hive           ← juniorgw initiatives
+#pg-hive           ← pg initiatives
 #turq-hive         ← turqgw initiatives  
 #hermes-hive       ← Hermes initiatives
 
@@ -129,7 +129,7 @@ default_thread_suffix = "-proj"
 
 [[discord_master.channels]]
 name = "pg-hive"
-mention_target = "user:1477047646769254643"  # juniorgw bot
+mention_target = "user:1477047646769254643"  # pg bot
 mention_type = "user"
 
 [[discord_master.channels]]
@@ -147,20 +147,20 @@ mention_type = "user"
 
 List initiative threads in hive channels:
 ```bash
-hive-cli hive-thread-list --to pg1
+hive-cli hive-thread-list --to pg
 # Searches for threads ending in "-init" within "*-hive" channels
 ```
 
 List project channels:
 ```bash
-hive-cli hive-thread-list --to pg1 --thread-suffix "-proj"
+hive-cli hive-thread-list --to pg --thread-suffix "-proj"
 # Searches for threads ending in "-proj" (within any channel)
 ```
 
 Send to an initiative thread:
 ```bash
 hive-cli hive-thread-send \
-  --to pg1 \
+  --to pg \
   --thread-id <id> \
   --message "Update on qmd-migration-init"
 ```
@@ -170,18 +170,18 @@ hive-cli hive-thread-send \
 ### Existing Channels
 
 Current channels to migrate:
-- `#juniorgw-hive` → `#pg-hive`
+- `#pg-hive` → `#pg-hive`
 - `#turqgw-hive` → `#turq-hive`
 - `#hermes-hive` → stays `#hermes-hive`
 
 Project threads in hive channels should become top-level project channels:
-- `#juniorgw-hive > openclaw-pg-proj` (thread) → `#openclaw-pg-proj` (channel)
+- `#pg-hive > openclaw-pg-proj` (thread) → `#openclaw-pg-proj` (channel)
 - `#turqgw-hive > hive-cli-turq-proj` (thread) → `#hive-cli-turq-proj` (channel)
 
 ### Migration Steps
 
 1. Create new top-level project channels for existing project threads
-2. Rename hive channels to use aliases (`juniorgw-hive` → `pg-hive`)
+2. Rename hive channels to use aliases (`pg-hive` → `pg-hive`)
 3. Move initiative threads to appropriate hive channels
 4. Update Discord bot config with new channel mappings
 5. Update `hive-thread-list` defaults if needed

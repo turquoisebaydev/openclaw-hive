@@ -13,7 +13,7 @@ You receive system events prefixed with `[hive:...]`. These are messages from ot
 
 Example inbound:
 ```
-[hive:turq->pg1 ch:command] Generate meural images for tomorrow's theme
+[hive:turq->pg ch:command] Generate meural images for tomorrow's theme
 ```
 
 ## Architecture (What You Need to Know)
@@ -58,7 +58,7 @@ hive-cli send \
 ### Send and wait for response (synchronous)
 ```bash
 hive-cli send \
-  --to pg1 \
+  --to pg \
   --ch command \
   --action ping \
   --text "health check" \
@@ -127,14 +127,14 @@ You only see action messages when:
 
 ### Command — do the work
 ```
-[hive:turq->pg1 ch:command] Check what services are using the most memory
+[hive:turq->pg ch:command] Check what services are using the most memory
 ```
 1. Do the work
 2. Reply with results via `hive-cli reply` (only because info was requested)
 
 ### Alert — triage urgently
 ```
-[hive:turq->pg1 ch:alert] URGENT Service mosquitto is down
+[hive:turq->pg ch:alert] URGENT Service mosquitto is down
 ```
 1. Investigate immediately
 2. Fix if possible
@@ -142,14 +142,14 @@ You only see action messages when:
 
 ### Failed handler — investigate
 ```
-[hive:turq->pg1 ch:command] git-sync handler failed: merge conflict
+[hive:turq->pg ch:command] git-sync handler failed: merge conflict
 ```
 1. Check the conflict
 2. Resolve if safe, otherwise escalate
 
 ### Response — consume it
 ```
-[hive:pg1->turq ch:response] {"ok": true, "synced": 2, "failed": 0}
+[hive:pg->turq ch:response] {"ok": true, "synced": 2, "failed": 0}
 ```
 Use the information. Don't reply to responses.
 
