@@ -12,6 +12,7 @@ from hive_daemon.discord_thread_governor_bot import (
     DiscordThreadGovernorClient,
     _format_last_owner,
     _format_unlock_eta,
+    _locked_thread_violation_message,
     create_thread_governor_client,
 )
 
@@ -81,3 +82,9 @@ def test_is_authorized_allows_thread_admin():
     )
 
     assert client._is_authorized(interaction) is True
+
+
+def test_locked_thread_violation_message():
+    msg = _locked_thread_violation_message()
+    assert "Bots are not required to respond" in msg
+    assert "NO_REPLY" in msg

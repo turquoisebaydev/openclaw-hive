@@ -23,6 +23,7 @@ log = logging.getLogger("hive_daemon.thread_governor_bot")
 
 _LOCK_REASON = "Hive thread governor cooldown"
 _UNLOCK_REASON = "Hive thread governor resume"
+_LOCKED_THREAD_VIOLATION_NOTICE_COOLDOWN_SEC = 60
 
 
 class ThreadGovernorBudgetGroup(app_commands.Group):
@@ -119,6 +120,7 @@ class DiscordThreadGovernorClient(discord.Client):
         self._unlock_task: asyncio.Task | None = None
         self._cleanup_task: asyncio.Task | None = None
         self._background_started = False
+        self._last_violation_notice_at: dict[str, datetime] = {}
 
         self.tree.add_command(
             app_commands.Command(
@@ -185,13 +187,56 @@ class DiscordThreadGovernorClient(discord.Client):
             return
 
         parent_id = str(message.channel.parent_id or (message.channel.parent.id if message.channel.parent else ""))
-        await self._governor.handle_inbound_message(
+        state = await self._governor.handle_inbound_message(
             thread_id=str(message.channel.id),
             parent_id=parent_id,
             author_id=str(message.author.id),
             is_bot=bool(message.author.bot),
             is_system=message.is_system(),
         )
+        if state is not None and state.locked:
+            await self._enforce_locked_thread(message)
+
+    async def _enforce_locked_thread(self, message: discord.Message) -> None:
+        if self.user is not None and message.author.id == self.user.id:
+            return
+        if str(message.author.id) == self._governor_config.owner_id:
+            return
+        if message.is_system():
+            return
+
+        try:
+            await message.delete()
+        except (discord.NotFound, discord.Forbidden):
+            return
+        except discord.HTTPException:
+            log.exception(
+                "thread governor failed to delete locked-thread message thread=%s author=%s",
+                message.channel.id,
+                message.author.id,
+            )
+            return
+
+        await self._maybe_send_locked_thread_violation_notice(message.channel)
+        log.info(
+            "thread governor blocked message in locked thread=%s author=%s bot=%s",
+            message.channel.id,
+            message.author.id,
+            bool(message.author.bot),
+        )
+
+    async def _maybe_send_locked_thread_violation_notice(self, thread: discord.Thread) -> None:
+        now = datetime.now(timezone.utc)
+        thread_id = str(thread.id)
+        last = self._last_violation_notice_at.get(thread_id)
+        if last is not None and (now - last).total_seconds() < _LOCKED_THREAD_VIOLATION_NOTICE_COOLDOWN_SEC:
+            return
+
+        self._last_violation_notice_at[thread_id] = now
+        try:
+            await thread.send(_locked_thread_violation_message())
+        except discord.HTTPException:
+            log.exception("thread governor failed to send locked-thread violation notice thread=%s", thread.id)
 
     async def unlock_command(self, interaction: discord.Interaction) -> None:
         if not await self._require_authorized(interaction):
@@ -315,6 +360,13 @@ class DiscordThreadGovernorClient(discord.Client):
 def create_thread_governor_client(config: HiveConfig) -> DiscordThreadGovernorClient:
     """Construct the Discord thread governor client."""
     return DiscordThreadGovernorClient(config)
+
+
+def _locked_thread_violation_message() -> str:
+    return (
+        "Thread is locked by Hive governor cooldown. Message removed. "
+        "Bots are not required to respond here while locked — they should choose NO_REPLY until Hugh unlocks the thread."
+    )
 
 
 def _format_unlock_eta(unlock_at: datetime | None) -> str:
