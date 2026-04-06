@@ -13,6 +13,8 @@ from hive_daemon.config import (
     OcInstance,
     PresenceConfig,
     PresenceDiscoveryConfig,
+    ThreadGovernorCleanupConfig,
+    ThreadGovernorConfig,
     ThreadingConfig,
     load_config,
 )
@@ -196,6 +198,69 @@ id = "turq"
 
 [presence]
 enabled = false
+"""
+
+THREAD_GOVERNOR_FULL_TOML = """\
+[node]
+id = "turq"
+
+[discord_master]
+enabled = true
+guild_id = "1476805337968279685"
+bot_token = "tok"
+
+[discord_master.thread_governor]
+owner_id = "737554625577746492"
+watched_parents = ["1490207637101613076", "1490207000000000000"]
+default_limit = 15
+auto_unlock_minutes = 12
+notice_template = "Paused for {minutes}m after {limit} turns."
+
+[discord_master.thread_governor.cleanup]
+interval_minutes = 30
+idle_expiry_days = 14
+archived_expiry_days = 5
+"""
+
+THREAD_GOVERNOR_PARTIAL_TOML = """\
+[node]
+id = "turq"
+
+[discord_master]
+enabled = true
+guild_id = "1476805337968279685"
+bot_token = "tok"
+
+[discord_master.thread_governor]
+owner_id = "737554625577746492"
+watched_parents = ["1490207637101613076"]
+"""
+
+THREAD_GOVERNOR_MISSING_OWNER_TOML = """\
+[node]
+id = "turq"
+
+[discord_master]
+enabled = true
+guild_id = "1476805337968279685"
+bot_token = "tok"
+
+[discord_master.thread_governor]
+watched_parents = ["1490207637101613076"]
+"""
+
+THREAD_GOVERNOR_EMPTY_WATCHED_TOML = """\
+[node]
+id = "turq"
+
+[discord_master]
+enabled = true
+guild_id = "1476805337968279685"
+bot_token = "tok"
+
+[discord_master.thread_governor]
+owner_id = "737554625577746492"
+watched_parents = []
 """
 
 
@@ -544,3 +609,54 @@ level = "DEBUG"
     aliases = {a.name: a for a in cfg.discord_master.aliases}
     assert aliases["pg"].mention_target == "user:1477047646769254643"
     assert aliases["qmd"].mention_target == "user:1482865686102671481"
+
+
+def test_thread_governor_config_loads(tmp_path: Path):
+    f = tmp_path / "hive.toml"
+    f.write_text(THREAD_GOVERNOR_FULL_TOML)
+    cfg = load_config(f)
+
+    governor = cfg.discord_master.thread_governor
+    assert governor == ThreadGovernorConfig(
+        owner_id="737554625577746492",
+        watched_parents=["1490207637101613076", "1490207000000000000"],
+        default_limit=15,
+        auto_unlock_minutes=12,
+        notice_template="Paused for {minutes}m after {limit} turns.",
+        cleanup=ThreadGovernorCleanupConfig(
+            interval_minutes=30,
+            idle_expiry_days=14,
+            archived_expiry_days=5,
+        ),
+    )
+
+
+def test_thread_governor_defaults_apply_when_optional_keys_missing(tmp_path: Path):
+    f = tmp_path / "hive.toml"
+    f.write_text(THREAD_GOVERNOR_PARTIAL_TOML)
+    cfg = load_config(f)
+
+    governor = cfg.discord_master.thread_governor
+    assert governor is not None
+    assert governor.owner_id == "737554625577746492"
+    assert governor.watched_parents == ["1490207637101613076"]
+    assert governor.default_limit == 12
+    assert governor.auto_unlock_minutes == 10
+    assert governor.notice_template.startswith("Paused for {minutes}m:")
+    assert governor.cleanup == ThreadGovernorCleanupConfig()
+
+
+def test_thread_governor_requires_owner_id(tmp_path: Path):
+    f = tmp_path / "hive.toml"
+    f.write_text(THREAD_GOVERNOR_MISSING_OWNER_TOML)
+
+    with pytest.raises(KeyError, match="discord_master.thread_governor.owner_id"):
+        load_config(f)
+
+
+def test_thread_governor_requires_watched_parents(tmp_path: Path):
+    f = tmp_path / "hive.toml"
+    f.write_text(THREAD_GOVERNOR_EMPTY_WATCHED_TOML)
+
+    with pytest.raises(ValueError, match="discord_master.thread_governor.watched_parents must not be empty"):
+        load_config(f)

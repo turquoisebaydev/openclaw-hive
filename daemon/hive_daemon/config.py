@@ -131,6 +131,30 @@ class DiscordMasterAliasConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ThreadGovernorCleanupConfig:
+    """Cleanup policy for thread governor durable state."""
+
+    interval_minutes: int = 60
+    idle_expiry_days: int = 7
+    archived_expiry_days: int = 2
+
+
+@dataclass(frozen=True, slots=True)
+class ThreadGovernorConfig:
+    """Thread governor policy for watched Discord parents."""
+
+    owner_id: str
+    watched_parents: list[str]
+    default_limit: int = 12
+    auto_unlock_minutes: int = 10
+    notice_template: str = (
+        "Paused for {minutes}m: thread exceeded {limit} messages without Hugh. "
+        "Hugh can use /unlock to resume sooner."
+    )
+    cleanup: ThreadGovernorCleanupConfig = field(default_factory=ThreadGovernorCleanupConfig)
+
+
+@dataclass(frozen=True, slots=True)
 class DiscordMasterConfig:
     """Discord bot API settings for the Discord master daemon."""
 
@@ -144,6 +168,7 @@ class DiscordMasterConfig:
     default_thread_suffix: str = "-init"
     channels: list[DiscordMasterChannelConfig] = field(default_factory=list)
     aliases: list[DiscordMasterAliasConfig] = field(default_factory=list)
+    thread_governor: ThreadGovernorConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,6 +335,8 @@ def load_config(path: Path) -> HiveConfig:
                 )
             )
 
+    thread_governor = _load_thread_governor_config(discord_master_section.get("thread_governor"))
+
     discord_master = DiscordMasterConfig(
         enabled=discord_master_section.get("enabled", False),
         guild_id=discord_master_section.get("guild_id"),
@@ -321,6 +348,7 @@ def load_config(path: Path) -> HiveConfig:
         default_thread_suffix=discord_master_section.get("default_thread_suffix", "-init"),
         channels=discord_master_channels,
         aliases=discord_master_aliases,
+        thread_governor=thread_governor,
     )
 
     return HiveConfig(
@@ -335,4 +363,67 @@ def load_config(path: Path) -> HiveConfig:
         announcements=announcements,
         discord_master=discord_master,
         log_level=raw.get("logging", {}).get("level", "INFO"),
+    )
+
+
+def _load_thread_governor_config(raw: object) -> ThreadGovernorConfig | None:
+    """Parse an optional thread governor config block."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("discord_master.thread_governor must be a table")
+
+    owner_id = str(raw.get("owner_id") or "").strip()
+    if not owner_id:
+        raise KeyError("discord_master.thread_governor.owner_id is required")
+
+    watched_raw = raw.get("watched_parents")
+    if watched_raw is None:
+        raise KeyError("discord_master.thread_governor.watched_parents is required")
+    if not isinstance(watched_raw, list):
+        raise ValueError("discord_master.thread_governor.watched_parents must be a list")
+    watched_parents = [str(value).strip() for value in watched_raw if str(value).strip()]
+    if not watched_parents:
+        raise ValueError("discord_master.thread_governor.watched_parents must not be empty")
+
+    default_limit = int(raw.get("default_limit", 12))
+    if default_limit < 1:
+        raise ValueError("discord_master.thread_governor.default_limit must be >= 1")
+
+    auto_unlock_minutes = int(raw.get("auto_unlock_minutes", 10))
+    if auto_unlock_minutes < 1:
+        raise ValueError("discord_master.thread_governor.auto_unlock_minutes must be >= 1")
+
+    notice_template = str(
+        raw.get(
+            "notice_template",
+            "Paused for {minutes}m: thread exceeded {limit} messages without Hugh. "
+            "Hugh can use /unlock to resume sooner.",
+        )
+    ).strip()
+    if not notice_template:
+        raise ValueError("discord_master.thread_governor.notice_template must not be empty")
+
+    cleanup_raw = raw.get("cleanup", {})
+    if not isinstance(cleanup_raw, dict):
+        raise ValueError("discord_master.thread_governor.cleanup must be a table")
+    cleanup = ThreadGovernorCleanupConfig(
+        interval_minutes=int(cleanup_raw.get("interval_minutes", 60)),
+        idle_expiry_days=int(cleanup_raw.get("idle_expiry_days", 7)),
+        archived_expiry_days=int(cleanup_raw.get("archived_expiry_days", 2)),
+    )
+    if cleanup.interval_minutes < 1:
+        raise ValueError("discord_master.thread_governor.cleanup.interval_minutes must be >= 1")
+    if cleanup.idle_expiry_days < 1:
+        raise ValueError("discord_master.thread_governor.cleanup.idle_expiry_days must be >= 1")
+    if cleanup.archived_expiry_days < 1:
+        raise ValueError("discord_master.thread_governor.cleanup.archived_expiry_days must be >= 1")
+
+    return ThreadGovernorConfig(
+        owner_id=owner_id,
+        watched_parents=watched_parents,
+        default_limit=default_limit,
+        auto_unlock_minutes=auto_unlock_minutes,
+        notice_template=notice_template,
+        cleanup=cleanup,
     )

@@ -5,12 +5,21 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from hive_daemon.config import HiveConfig, MqttConfig, OcInstance, PresenceConfig, DiscordMasterConfig
+from hive_daemon.config import (
+    DiscordMasterConfig,
+    HiveConfig,
+    MqttConfig,
+    OcInstance,
+    PresenceConfig,
+    ThreadGovernorCleanupConfig,
+    ThreadGovernorConfig,
+)
 from hive_daemon.envelope import Envelope
 from hive_daemon.main import (
     _build_topics,
     _extract_topic_target,
     _handle_message,
+    _log_effective_feature_config,
     _parse_topic_channel,
     setup_router,
 )
@@ -90,6 +99,35 @@ class TestBuildTopics:
         # Count occurrences of the turq subscription
         turq_subs = [t for t in topics if t == "turq/hive/turq/+"]
         assert len(turq_subs) == 1
+
+
+class TestFeatureConfigLogging:
+    def test_logs_thread_governor_effective_config(self, caplog):
+        cfg = _config(
+            discord_master=DiscordMasterConfig(
+                enabled=True,
+                guild_id="1476805337968279685",
+                bot_token="tok",
+                thread_governor=ThreadGovernorConfig(
+                    owner_id="737554625577746492",
+                    watched_parents=["1490207637101613076"],
+                    default_limit=12,
+                    auto_unlock_minutes=10,
+                    cleanup=ThreadGovernorCleanupConfig(
+                        interval_minutes=60,
+                        idle_expiry_days=7,
+                        archived_expiry_days=2,
+                    ),
+                ),
+            )
+        )
+
+        with caplog.at_level("INFO", logger="hive_daemon"):
+            _log_effective_feature_config(cfg)
+
+        assert "thread governor enabled" in caplog.text
+        assert "1490207637101613076" in caplog.text
+        assert "default_limit=12" in caplog.text
 
 
 class TestExtractTopicTarget:

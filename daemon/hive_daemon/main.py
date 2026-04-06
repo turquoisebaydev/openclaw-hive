@@ -13,7 +13,10 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import aiomqtt
+try:
+    import aiomqtt
+except ModuleNotFoundError:  # pragma: no cover - exercised only in lean test envs
+    aiomqtt = None  # type: ignore[assignment]
 
 try:
     from watchdog.events import FileSystemEventHandler
@@ -444,11 +447,35 @@ def setup_router(
     return router
 
 
+def _log_effective_feature_config(config: HiveConfig) -> None:
+    """Emit startup logs for optional feature blocks."""
+    governor = config.discord_master.thread_governor
+    if governor is None:
+        return
+
+    log.info(
+        "thread governor enabled owner=%s watched_parents=%s default_limit=%s "
+        "auto_unlock_minutes=%s cleanup_interval_minutes=%s idle_expiry_days=%s "
+        "archived_expiry_days=%s",
+        governor.owner_id,
+        governor.watched_parents,
+        governor.default_limit,
+        governor.auto_unlock_minutes,
+        governor.cleanup.interval_minutes,
+        governor.cleanup.idle_expiry_days,
+        governor.cleanup.archived_expiry_days,
+    )
+
+
 async def run_daemon(config: HiveConfig) -> None:
     """Main daemon loop: connect to MQTT and process messages."""
+    if aiomqtt is None:
+        raise RuntimeError("aiomqtt is required to run hive daemon")
+
     topics = _build_topics(config)
     log.info("starting hive daemon as %s", config.node_id)
     log.info("subscribing to: %s", topics)
+    _log_effective_feature_config(config)
 
     shutdown = asyncio.Event()
 
