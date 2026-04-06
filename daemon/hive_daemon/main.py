@@ -478,10 +478,32 @@ async def run_daemon(config: HiveConfig) -> None:
     _log_effective_feature_config(config)
 
     shutdown = asyncio.Event()
+    thread_governor_client = None
+    thread_governor_task: asyncio.Task | None = None
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, shutdown.set)
+
+    if config.discord_master.thread_governor is not None:
+        from hive_daemon.discord_thread_governor_bot import create_thread_governor_client
+
+        thread_governor_client = create_thread_governor_client(config)
+        thread_governor_task = asyncio.create_task(
+            thread_governor_client.start(config.discord_master.bot_token),
+            name="thread-governor-bot",
+        )
+
+        def _thread_governor_done(task: asyncio.Task) -> None:
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is None:
+                return
+            log.error("thread governor bot exited: %s", exc)
+            shutdown.set()
+
+        thread_governor_task.add_done_callback(_thread_governor_done)
 
     # Set up dispatcher
     dispatcher = Dispatcher(
@@ -661,6 +683,16 @@ async def run_daemon(config: HiveConfig) -> None:
                 break
             log.error("MQTT connection error: %s — reconnecting in 5s", exc)
             await asyncio.sleep(5)
+
+    if thread_governor_client is not None:
+        await thread_governor_client.close()
+    if thread_governor_task is not None:
+        try:
+            await thread_governor_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            log.error("thread governor task ended with error: %s", exc)
 
     log.info("hive daemon shutting down")
 
