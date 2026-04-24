@@ -10,7 +10,7 @@ import click
 
 from hive_daemon.config import HiveConfig, load_config
 
-from hive_cli.commands import send, reply, status, sessions, session_history, roster, discord, hive_thread_list, hive_thread_send
+from hive_cli.commands import send, reply, status, sessions, session_history, roster, discord, hive_thread_list, hive_thread_send, hive_thread_create, hive_thread_rename
 
 
 def _parse_semver_triplet(version: str) -> tuple[int, int, int]:
@@ -70,6 +70,8 @@ cli.add_command(roster)
 cli.add_command(discord)
 cli.add_command(hive_thread_list)
 cli.add_command(hive_thread_send)
+cli.add_command(hive_thread_create)
+cli.add_command(hive_thread_rename)
 
 
 def main() -> None:

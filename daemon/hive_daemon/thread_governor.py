@@ -108,7 +108,11 @@ class ThreadGovernor:
             if state.locked:
                 return state
 
-            if is_bot or is_system:
+            if is_system:
+                if state.last_message_at != ts:
+                    updated = replace(state, last_message_at=ts)
+                    self._store.save(updated)
+                    return updated
                 return state
 
             if author_id == self._config.owner_id:
@@ -117,6 +121,7 @@ class ThreadGovernor:
                     count=0,
                     last_owner_at=ts,
                     last_message_at=ts,
+                    last_bot_author_id=None,
                 )
                 self._store.save(updated)
                 log.info(
@@ -129,10 +134,26 @@ class ThreadGovernor:
                 )
                 return updated
 
+            if not is_bot:
+                updated = replace(
+                    state,
+                    last_message_at=ts,
+                    last_bot_author_id=None,
+                )
+                self._store.save(updated)
+                return updated
+
+            # Count only bot ping-pong turns: switching from one bot author to another.
+            # A single bot emitting multiple progress messages should not consume budget.
+            next_count = state.count
+            if state.last_bot_author_id and state.last_bot_author_id != author_id:
+                next_count += 1
+
             updated = replace(
                 state,
-                count=state.count + 1,
+                count=next_count,
                 last_message_at=ts,
+                last_bot_author_id=author_id,
             )
             if updated.count < updated.limit:
                 self._store.save(updated)
@@ -352,6 +373,7 @@ class ThreadGovernor:
             locked_at=None,
             unlock_at=None,
             closed_reason=None,
+            last_bot_author_id=None,
             last_message_at=max(state.last_message_at, now),
         )
         self._store.save(updated)

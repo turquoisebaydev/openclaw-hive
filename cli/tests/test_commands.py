@@ -1020,3 +1020,106 @@ class TestDiscordCommands:
         assert payload_json["text"]
         body = json.loads(payload_json["text"])
         assert body["content"].startswith("<@123>")
+
+
+    @patch("hive_cli.commands._publish_and_wait")
+    def test_discord_thread_rename(self, mock_wait, runner, config_file):
+        response = create_envelope(
+            from_="pg1",
+            to="test-node-1",
+            ch="response",
+            text=json.dumps({"ok": True, "thread": {"id": "123", "name": "qmd-migration-init"}}),
+            urgency="now",
+            corr="c3",
+        )
+        mock_wait.return_value = response
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "discord", "thread-rename",
+            "--to", "pg1",
+            "--thread-id", "123",
+            "--name", "qmd-migration-init",
+            "--wait", "10",
+        ])
+
+        assert result.exit_code == 0, result.output
+        assert '"ok": true' in result.output.lower()
+
+
+    @patch("hive_cli.commands._publish_and_wait")
+    def test_hive_thread_rename_by_id(self, mock_wait, runner, config_file):
+        response = create_envelope(
+            from_="pg1",
+            to="test-node-1",
+            ch="response",
+            text=json.dumps({"ok": True, "thread": {"id": "t1", "name": "monitoring-init"}}),
+            urgency="now",
+            corr="c4",
+        )
+        mock_wait.return_value = response
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "hive-thread-rename",
+            "--to", "pg1",
+            "--thread-id", "t1",
+            "--new-name", "monitoring-init",
+            "--wait", "10",
+        ])
+
+        assert result.exit_code == 0, result.output
+        assert "renamed t1 -> monitoring-init" in result.output
+
+
+    @patch("hive_cli.commands._publish_and_wait")
+    def test_discord_thread_create(self, mock_wait, runner, config_file):
+        response = create_envelope(
+            from_="pg1",
+            to="test-node-1",
+            ch="response",
+            text=json.dumps({"ok": True, "thread": {"id": "t1", "name": "monitoring-init", "parent_id": "1490"}}),
+            urgency="now",
+            corr="c5",
+        )
+        mock_wait.return_value = response
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "discord", "thread-create",
+            "--to", "pg1",
+            "--name", "monitoring-init",
+            "--content", "kickoff",
+            "--mention-target", "user:123",
+            "--wait", "10",
+        ])
+
+        assert result.exit_code == 0, result.output
+        assert '"ok": true' in result.output.lower()
+
+
+    @patch("hive_cli.commands._publish_and_wait")
+    def test_hive_thread_create(self, mock_wait, runner, config_file):
+        response = create_envelope(
+            from_="pg1",
+            to="test-node-1",
+            ch="response",
+            text=json.dumps({"ok": True, "thread": {"id": "t9", "name": "ops-init", "parent_id": "1490"}}),
+            urgency="now",
+            corr="c6",
+        )
+        mock_wait.return_value = response
+
+        result = runner.invoke(cli, [
+            "--config", str(config_file),
+            "hive-thread-create",
+            "--to", "pg1",
+            "--name", "ops-init",
+            "--message", "starting",
+            "--participant", "pg",
+            "--participant", "user:123",
+            "--wait", "10",
+        ])
+
+        assert result.exit_code == 0, result.output
+        assert "created t9 -> ops-init" in result.output

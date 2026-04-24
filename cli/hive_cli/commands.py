@@ -518,6 +518,69 @@ def discord_thread_send(ctx: click.Context, to_node: str, thread_id: str, conten
     _print_discord_response(ctx, response, wait_timeout)
 
 
+@discord.command(name="thread-create")
+@click.option("--to", "to_node", required=True, help="Target node (local daemon may proxy to master).")
+@click.option("--parent-id", default=None, help="Parent channel id. Defaults to discord_master.default_hive_channel_id when configured.")
+@click.option("--name", "thread_name", required=True, help="Thread name.")
+@click.option("--content", default="", help="Starter message content.")
+@click.option("--mention-target", "mention_targets", multiple=True, help="Mention target (user:<id>, role:<id>, <@id>, <@&id>, or raw id). Repeatable.")
+@click.option("--mention-query", "mention_queries", multiple=True, help="Name to resolve to a mention (user/role). Repeatable.")
+@click.option("--wait", "wait_timeout", default=20.0, show_default=True, type=float, help="Wait timeout (seconds).")
+@click.pass_context
+def discord_thread_create(
+    ctx: click.Context,
+    to_node: str,
+    parent_id: str | None,
+    thread_name: str,
+    content: str,
+    mention_targets: tuple[str, ...],
+    mention_queries: tuple[str, ...],
+    wait_timeout: float,
+) -> None:
+    cfg = _get_config(ctx)
+    payload: dict[str, object] = {
+        "name": thread_name.strip(),
+        "content": content,
+    }
+    if parent_id:
+        payload["parent_id"] = parent_id
+    if mention_targets:
+        payload["mention_targets"] = list(mention_targets)
+    if mention_queries:
+        payload["mention_queries"] = list(mention_queries)
+
+    response = asyncio.run(
+        _send_discord_action(
+            cfg,
+            to_node=to_node,
+            action="discord.thread.create",
+            payload=payload,
+            wait_timeout=wait_timeout,
+        )
+    )
+    _print_discord_response(ctx, response, wait_timeout)
+
+
+@discord.command(name="thread-rename")
+@click.option("--to", "to_node", required=True, help="Target node (local daemon may proxy to master).")
+@click.option("--thread-id", required=True, help="Discord thread channel id.")
+@click.option("--name", "new_name", required=True, help="New thread name.")
+@click.option("--wait", "wait_timeout", default=20.0, show_default=True, type=float, help="Wait timeout (seconds).")
+@click.pass_context
+def discord_thread_rename(ctx: click.Context, to_node: str, thread_id: str, new_name: str, wait_timeout: float) -> None:
+    cfg = _get_config(ctx)
+    response = asyncio.run(
+        _send_discord_action(
+            cfg,
+            to_node=to_node,
+            action="discord.thread.rename",
+            payload={"thread_id": thread_id, "new_name": new_name.strip()},
+            wait_timeout=wait_timeout,
+        )
+    )
+    _print_discord_response(ctx, response, wait_timeout)
+
+
 @discord.command(name="thread-history")
 @click.option("--to", "to_node", required=True, help="Target node (local daemon may proxy to master).")
 @click.option("--thread-id", required=True, help="Discord thread channel id.")
@@ -829,3 +892,190 @@ def hive_thread_send(
     msg = parsed_send.get("message") or {}
     click.echo(f"sent {msg.get('id')} -> thread {parsed_send.get('thread_id')}")
     click.echo(msg.get("content") or "")
+
+
+
+
+@click.command(name="hive-thread-create")
+@click.option("--to", "to_node", default=None, help="Target node (defaults to local node id).")
+@click.option("--parent-id", default=None, help="Parent channel id. Defaults to discord_master.default_hive_channel_id when configured.")
+@click.option("--name", "thread_name", required=True, help="Thread name.")
+@click.option("--message", default="", help="Starter message body.")
+@click.option("--participant", "participants", multiple=True, help="Participant to mention (alias/name/id/mention target). Repeatable.")
+@click.option("--wait", "wait_timeout", default=20.0, show_default=True, type=float, help="Wait timeout (seconds).")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON response.")
+@click.pass_context
+def hive_thread_create(
+    ctx: click.Context,
+    to_node: str | None,
+    parent_id: str | None,
+    thread_name: str,
+    message: str,
+    participants: tuple[str, ...],
+    wait_timeout: float,
+    as_json: bool,
+) -> None:
+    """Create a hive Discord thread, optionally mentioning users/bots."""
+    cfg = _get_config(ctx)
+    target = to_node or cfg.node_id
+
+    payload: dict[str, object] = {
+        "name": thread_name.strip(),
+        "content": message.strip(),
+    }
+    if parent_id:
+        payload["parent_id"] = parent_id
+
+    mention_targets: list[str] = []
+    mention_queries: list[str] = []
+    for p in participants:
+        raw = p.strip()
+        if not raw:
+            continue
+        if raw.startswith(("user:", "role:", "<@")) or raw.isdigit():
+            mention_targets.append(raw)
+        else:
+            mention_queries.append(raw)
+
+    if mention_targets:
+        payload["mention_targets"] = mention_targets
+    if mention_queries:
+        payload["mention_queries"] = mention_queries
+
+    response = asyncio.run(
+        _send_discord_action(
+            cfg,
+            to_node=target,
+            action="discord.thread.create",
+            payload=payload,
+            wait_timeout=wait_timeout,
+        )
+    )
+
+    parsed = _discord_response_json(response)
+    if response is None:
+        click.echo(f"timeout: no response after {wait_timeout}s", err=True)
+        ctx.exit(1)
+        return
+    if parsed is None:
+        click.echo(response.text)
+        return
+    if parsed.get("ok") is not True:
+        click.echo(json.dumps(parsed, indent=2), err=True)
+        ctx.exit(1)
+        return
+
+    if as_json:
+        click.echo(json.dumps(parsed, indent=2))
+        return
+
+    thread = parsed.get("thread") or {}
+    click.echo(f"created {thread.get('id')} -> {thread.get('name')} (parent {thread.get('parent_id')})")
+
+@click.command(name="hive-thread-rename")
+@click.option("--to", "to_node", default=None, help="Target node (defaults to local node id).")
+@click.option("--thread-id", default=None, help="Discord thread/channel id (use if --name is ambiguous or not found).")
+@click.option("--name", default=None, help="Thread/channel name to resolve.")
+@click.option("--new-name", required=True, help="New thread name.")
+@click.option("--wait", "wait_timeout", default=20.0, show_default=True, type=float, help="Wait timeout (seconds).")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON response.")
+@click.pass_context
+def hive_thread_rename(
+    ctx: click.Context,
+    to_node: str | None,
+    thread_id: str | None,
+    name: str | None,
+    new_name: str,
+    wait_timeout: float,
+    as_json: bool,
+) -> None:
+    """Rename a hive thread/channel by id or name."""
+    cfg = _get_config(ctx)
+    target = to_node or cfg.node_id
+
+    if not name and not thread_id:
+        raise click.UsageError("Either --name or --thread-id is required")
+    if name and thread_id:
+        raise click.UsageError("Use either --name or --thread-id, not both")
+
+    final_name = new_name.strip()
+    if not final_name:
+        raise click.UsageError("--new-name must be non-empty")
+
+    if name and not thread_id:
+        # Search -init threads under *-hive parents first
+        list_response = asyncio.run(
+            _send_discord_action(
+                cfg,
+                to_node=target,
+                action="discord.thread.list",
+                payload={
+                    "include_channels": True,
+                    "parent_suffix": "-hive",
+                    "thread_suffix": "-init",
+                },
+                wait_timeout=wait_timeout,
+            )
+        )
+        parsed_list = _discord_response_json(list_response)
+        if not parsed_list or not parsed_list.get("ok"):
+            raise click.ClickException(f"Failed to list threads for name resolution: {parsed_list}")
+
+        matches = [t for t in parsed_list.get("threads", []) if t.get("name") == name]
+
+        if not matches:
+            list_response_proj = asyncio.run(
+                _send_discord_action(
+                    cfg,
+                    to_node=target,
+                    action="discord.thread.list",
+                    payload={
+                        "include_channels": True,
+                        "parent_suffix": "-hive",
+                        "thread_suffix": "-proj",
+                    },
+                    wait_timeout=wait_timeout,
+                )
+            )
+            parsed_list_proj = _discord_response_json(list_response_proj)
+            if parsed_list_proj and parsed_list_proj.get("ok"):
+                matches = [t for t in parsed_list_proj.get("threads", []) if t.get("name") == name]
+
+        if not matches:
+            raise click.ClickException(f"No thread/channel found with name '{name}'")
+        if len(matches) > 1:
+            match_names = [m.get("name") for m in matches]
+            raise click.ClickException(f"Ambiguous name '{name}': found {len(matches)} matches: {', '.join(match_names)}")
+
+        thread_id = matches[0].get("id")
+        click.echo(f"resolved '{name}' -> {thread_id}")
+
+    rename_response = asyncio.run(
+        _send_discord_action(
+            cfg,
+            to_node=target,
+            action="discord.thread.rename",
+            payload={"thread_id": thread_id, "new_name": final_name},
+            wait_timeout=wait_timeout,
+        )
+    )
+
+    parsed = _discord_response_json(rename_response)
+    if rename_response is None:
+        click.echo(f"timeout: no response after {wait_timeout}s", err=True)
+        ctx.exit(1)
+        return
+    if parsed is None:
+        click.echo(rename_response.text)
+        return
+    if parsed.get("ok") is not True:
+        click.echo(json.dumps(parsed, indent=2), err=True)
+        ctx.exit(1)
+        return
+
+    if as_json:
+        click.echo(json.dumps(parsed, indent=2))
+        return
+
+    thread = parsed.get("thread") or {}
+    click.echo(f"renamed {thread.get('id')} -> {thread.get('name')}")

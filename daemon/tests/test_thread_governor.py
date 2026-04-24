@@ -74,7 +74,7 @@ def _thread(thread_id: str, *, archived: bool = False, archived_at: datetime | N
 
 @pytest.mark.asyncio
 class TestThreadGovernorInbound:
-    async def test_discovers_counts_and_resets_on_owner_message(self, tmp_path, caplog):
+    async def test_discovers_ping_pong_counts_and_resets_on_owner_message(self, tmp_path, caplog):
         actions = FakeActions()
         actions.threads["thr-1"] = _thread("thr-1")
         governor = ThreadGovernor(
@@ -87,9 +87,16 @@ class TestThreadGovernorInbound:
             first = await governor.handle_inbound_message(
                 thread_id="thr-1",
                 parent_id="1490207637101613076",
-                author_id="user-1",
-                is_bot=False,
+                author_id="bot-1",
+                is_bot=True,
                 now=_ts(3, 0),
+            )
+            second = await governor.handle_inbound_message(
+                thread_id="thr-1",
+                parent_id="1490207637101613076",
+                author_id="bot-2",
+                is_bot=True,
+                now=_ts(3, 1),
             )
             reset = await governor.handle_inbound_message(
                 thread_id="thr-1",
@@ -100,14 +107,16 @@ class TestThreadGovernorInbound:
             )
 
         assert first is not None
-        assert first.count == 1
+        assert first.count == 0
+        assert second is not None
+        assert second.count == 1
         assert reset is not None
         assert reset.count == 0
         assert reset.last_owner_at == _ts(3, 2)
         assert "thread-governor discover" in caplog.text
         assert "thread-governor reset" in caplog.text
 
-    async def test_ignores_unwatched_and_bot_messages(self, tmp_path):
+    async def test_ignores_unwatched_and_single_bot_stream(self, tmp_path):
         actions = FakeActions()
         actions.threads["thr-1"] = _thread("thr-1")
         governor = ThreadGovernor(
@@ -130,10 +139,19 @@ class TestThreadGovernorInbound:
             is_bot=True,
             now=_ts(4, 1),
         )
+        same_bot = await governor.handle_inbound_message(
+            thread_id="thr-1",
+            parent_id="1490207637101613076",
+            author_id="bot-1",
+            is_bot=True,
+            now=_ts(4, 2),
+        )
 
         assert ignored is None
         assert bot_state is not None
         assert bot_state.count == 0
+        assert same_bot is not None
+        assert same_bot.count == 0
 
     async def test_locks_at_threshold_and_stops_duplicate_notices(self, tmp_path, caplog):
         actions = FakeActions()
@@ -147,31 +165,33 @@ class TestThreadGovernorInbound:
         await governor.handle_inbound_message(
             thread_id="thr-1",
             parent_id="1490207637101613076",
-            author_id="user-1",
-            is_bot=False,
+            author_id="bot-1",
+            is_bot=True,
             now=_ts(5, 0),
         )
         with caplog.at_level("INFO", logger="hive_daemon.thread_governor"):
             locked = await governor.handle_inbound_message(
                 thread_id="thr-1",
                 parent_id="1490207637101613076",
-                author_id="user-2",
-                is_bot=False,
+                author_id="bot-2",
+                is_bot=True,
                 now=_ts(5, 1),
             )
             still_locked = await governor.handle_inbound_message(
                 thread_id="thr-1",
                 parent_id="1490207637101613076",
-                author_id="user-3",
-                is_bot=False,
+                author_id="bot-3",
+                is_bot=True,
                 now=_ts(5, 2),
             )
 
         assert locked is not None
-        assert locked.locked is True
-        assert locked.count == 2
-        assert locked.unlock_at == _ts(5, 11)
-        assert still_locked == locked
+        assert locked.locked is False
+        assert locked.count == 1
+        assert still_locked is not None
+        assert still_locked.locked is True
+        assert still_locked.count == 2
+        assert still_locked.unlock_at == _ts(5, 12)
         assert actions.lock_calls == ["thr-1"]
         assert len(actions.notices) == 1
         assert "thread-governor lock" in caplog.text
@@ -188,9 +208,16 @@ class TestThreadGovernorLifecycle:
         await governor.handle_inbound_message(
             thread_id="thr-1",
             parent_id="1490207637101613076",
-            author_id="user-1",
-            is_bot=False,
+            author_id="bot-1",
+            is_bot=True,
             now=_ts(6, 0),
+        )
+        await governor.handle_inbound_message(
+            thread_id="thr-1",
+            parent_id="1490207637101613076",
+            author_id="bot-2",
+            is_bot=True,
+            now=_ts(6, 1),
         )
         with caplog.at_level("INFO", logger="hive_daemon.thread_governor"):
             unlocked_count = await governor.unlock_due_threads(now=_ts(6, 11))

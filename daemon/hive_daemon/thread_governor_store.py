@@ -10,7 +10,7 @@ from pathlib import Path
 
 _ENV_KEY = "HIVE_THREAD_GOVERNOR_DB"
 _DEFAULT_PATH = Path.home() / ".local" / "state" / "hive" / "thread-governor.db"
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +28,7 @@ class ThreadGovernorState:
     locked_at: datetime | None
     unlock_at: datetime | None
     closed_reason: str | None = None
+    last_bot_author_id: str | None = None
 
 
 class ThreadGovernorStore:
@@ -76,6 +77,7 @@ class ThreadGovernorStore:
             locked_at=None,
             unlock_at=None,
             closed_reason=None,
+            last_bot_author_id=None,
         )
         self.save(state)
         return state, True
@@ -93,8 +95,9 @@ class ThreadGovernorStore:
             """
             INSERT INTO thread_governor_state (
                 thread_id, parent_id, count, message_limit, locked, created_at,
-                last_owner_at, last_message_at, locked_at, unlock_at, closed_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                last_owner_at, last_message_at, locked_at, unlock_at, closed_reason,
+                last_bot_author_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(thread_id) DO UPDATE SET
                 parent_id = excluded.parent_id,
                 count = excluded.count,
@@ -105,7 +108,8 @@ class ThreadGovernorStore:
                 last_message_at = excluded.last_message_at,
                 locked_at = excluded.locked_at,
                 unlock_at = excluded.unlock_at,
-                closed_reason = excluded.closed_reason
+                closed_reason = excluded.closed_reason,
+                last_bot_author_id = excluded.last_bot_author_id
             """,
             (
                 state.thread_id,
@@ -119,6 +123,7 @@ class ThreadGovernorStore:
                 _serialize_dt(state.locked_at),
                 _serialize_dt(state.unlock_at),
                 state.closed_reason,
+                state.last_bot_author_id,
             ),
         )
         self._conn.commit()
@@ -162,30 +167,36 @@ class ThreadGovernorStore:
 
     def _bootstrap(self) -> None:
         version = int(self._conn.execute("PRAGMA user_version").fetchone()[0])
-        if version >= _SCHEMA_VERSION:
-            return
+        if version < 1:
+            self._conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS thread_governor_state (
+                    thread_id TEXT PRIMARY KEY,
+                    parent_id TEXT NOT NULL,
+                    count INTEGER NOT NULL,
+                    message_limit INTEGER NOT NULL,
+                    locked INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    last_owner_at TEXT,
+                    last_message_at TEXT NOT NULL,
+                    locked_at TEXT,
+                    unlock_at TEXT,
+                    closed_reason TEXT
+                );
 
-        self._conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS thread_governor_state (
-                thread_id TEXT PRIMARY KEY,
-                parent_id TEXT NOT NULL,
-                count INTEGER NOT NULL,
-                message_limit INTEGER NOT NULL,
-                locked INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                last_owner_at TEXT,
-                last_message_at TEXT NOT NULL,
-                locked_at TEXT,
-                unlock_at TEXT,
-                closed_reason TEXT
-            );
+                CREATE INDEX IF NOT EXISTS idx_thread_governor_locked_unlock_at
+                ON thread_governor_state (locked, unlock_at);
+                """
+            )
+            version = 1
 
-            CREATE INDEX IF NOT EXISTS idx_thread_governor_locked_unlock_at
-            ON thread_governor_state (locked, unlock_at);
-            """
-        )
-        self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+        if version < 2:
+            self._conn.execute(
+                "ALTER TABLE thread_governor_state ADD COLUMN last_bot_author_id TEXT"
+            )
+            version = 2
+
+        self._conn.execute(f"PRAGMA user_version = {version}")
         self._conn.commit()
 
 
@@ -227,4 +238,5 @@ def _row_to_state(row: sqlite3.Row) -> ThreadGovernorState:
         locked_at=_deserialize_dt(row["locked_at"]),
         unlock_at=_deserialize_dt(row["unlock_at"]),
         closed_reason=row["closed_reason"],
+        last_bot_author_id=row["last_bot_author_id"],
     )

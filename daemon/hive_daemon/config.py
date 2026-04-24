@@ -166,6 +166,7 @@ class DiscordMasterConfig:
     request_timeout_sec: int = 10
     default_parent_suffix: str = "-hive"
     default_thread_suffix: str = "-init"
+    default_hive_channel_id: str | None = None
     channels: list[DiscordMasterChannelConfig] = field(default_factory=list)
     aliases: list[DiscordMasterAliasConfig] = field(default_factory=list)
     thread_governor: ThreadGovernorConfig | None = None
@@ -346,6 +347,11 @@ def load_config(path: Path) -> HiveConfig:
         request_timeout_sec=discord_master_section.get("request_timeout_sec", 10),
         default_parent_suffix=discord_master_section.get("default_parent_suffix", "-hive"),
         default_thread_suffix=discord_master_section.get("default_thread_suffix", "-init"),
+        default_hive_channel_id=(
+            discord_master_section.get("default_hive_channel_id")
+            or discord_master_section.get("default_hive_forum_channel_id")
+            or discord_master_section.get("default_hive_parent_id")
+        ),
         channels=discord_master_channels,
         aliases=discord_master_aliases,
         thread_governor=thread_governor,

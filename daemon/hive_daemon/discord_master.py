@@ -44,6 +44,10 @@ class DiscordMasterService:
             return self._thread_history(payload)
         if action == "discord.thread.send":
             return self._thread_send(payload)
+        if action == "discord.thread.rename":
+            return self._thread_rename(payload)
+        if action == "discord.thread.create":
+            return self._thread_create(payload)
         if action == "discord.thread.list":
             return self._thread_list(payload)
         if action == "discord.mention.resolve":
@@ -365,6 +369,128 @@ class DiscordMasterService:
                 "content": sent.get("content") or "",
             },
         }
+
+    def _thread_rename(self, payload: dict[str, Any]) -> dict[str, Any]:
+        thread_id = str(payload.get("thread_id") or payload.get("threadId") or "").strip()
+        new_name = str(payload.get("new_name") or payload.get("newName") or payload.get("name") or "").strip()
+        if not thread_id:
+            raise DiscordMasterError("discord.thread.rename requires thread_id")
+        if not new_name:
+            raise DiscordMasterError("discord.thread.rename requires new_name")
+        if len(new_name) > 100:
+            raise DiscordMasterError("discord.thread.rename new_name must be <= 100 chars")
+
+        updated = self._request_json("PATCH", f"/channels/{thread_id}", data={"name": new_name})
+        return {
+            "ok": True,
+            "thread": {
+                "id": updated.get("id") or thread_id,
+                "name": updated.get("name") or new_name,
+                "parent_id": updated.get("parent_id"),
+            },
+        }
+
+    def _thread_create(self, payload: dict[str, Any]) -> dict[str, Any]:
+        parent_id = str(
+            payload.get("parent_id")
+            or payload.get("parentId")
+            or payload.get("channel_id")
+            or payload.get("channelId")
+            or self.config.default_hive_channel_id
+            or ""
+        ).strip()
+        name = str(payload.get("name") or payload.get("thread_name") or payload.get("threadName") or "").strip()
+        content = str(payload.get("content") or payload.get("message") or payload.get("text") or "").strip()
+
+        if not parent_id:
+            raise DiscordMasterError(
+                "discord.thread.create requires parent_id (or configure discord_master.default_hive_channel_id)"
+            )
+        if not name:
+            raise DiscordMasterError("discord.thread.create requires name")
+        if len(name) > 100:
+            raise DiscordMasterError("discord.thread.create name must be <= 100 chars")
+
+        mentions = self._build_mentions(payload)
+        mention_prefix = " ".join(mentions).strip()
+        final_content = " ".join([x for x in [mention_prefix, content] if x]).strip()
+
+        parent = self._request_json("GET", f"/channels/{parent_id}")
+        parent_type = int(parent.get("type", 0)) if isinstance(parent, dict) else 0
+
+        # Forum channels (type 15) require create-thread-with-message.
+        if parent_type == 15:
+            body: dict[str, Any] = {"name": name, "message": {"content": final_content or name}}
+            thread_meta = payload.get("thread_metadata")
+            if isinstance(thread_meta, dict):
+                body.update(thread_meta)
+            created = self._request_json("POST", f"/channels/{parent_id}/threads", data=body)
+            return {
+                "ok": True,
+                "thread": {
+                    "id": created.get("id"),
+                    "name": created.get("name") or name,
+                    "parent_id": created.get("parent_id") or parent_id,
+                },
+                "mentions": mentions,
+            }
+
+        # Text channel path: create a starter message, then spin a thread from it.
+        starter = self._request_json(
+            "POST",
+            f"/channels/{parent_id}/messages",
+            data={"content": final_content or name},
+        )
+        starter_id = str(starter.get("id") or "").strip()
+        if not starter_id:
+            raise DiscordMasterError("discord.thread.create failed to create starter message")
+
+        thread_payload: dict[str, Any] = {"name": name}
+        auto_archive_duration = payload.get("auto_archive_duration") or payload.get("autoArchiveDuration")
+        if auto_archive_duration is not None:
+            thread_payload["auto_archive_duration"] = int(auto_archive_duration)
+
+        created = self._request_json(
+            "POST",
+            f"/channels/{parent_id}/messages/{starter_id}/threads",
+            data=thread_payload,
+        )
+        return {
+            "ok": True,
+            "thread": {
+                "id": created.get("id"),
+                "name": created.get("name") or name,
+                "parent_id": created.get("parent_id") or parent_id,
+            },
+            "starter_message_id": starter_id,
+            "mentions": mentions,
+        }
+
+    def _build_mentions(self, payload: dict[str, Any]) -> list[str]:
+        mentions: list[str] = []
+
+        def add(m: str | None) -> None:
+            mm = (m or "").strip()
+            if mm and mm not in mentions:
+                mentions.append(mm)
+
+        targets = payload.get("mention_targets") or payload.get("mentionTargets") or []
+        if isinstance(targets, list):
+            for target in targets:
+                mention = self._mention_from_target(str(target), "auto")
+                add(mention)
+
+        queries = payload.get("mention_queries") or payload.get("mentionQueries") or []
+        if isinstance(queries, list):
+            for query in queries:
+                q = str(query).strip()
+                if not q:
+                    continue
+                resolved = self._mention_resolve({"query": q, "mention_type": "auto"})
+                if isinstance(resolved, dict) and resolved.get("ok") is True:
+                    add(str(resolved.get("mention") or ""))
+
+        return mentions
 
     def _mention_from_target(self, target: str, mention_type: str = "auto") -> str | None:
         t = target.strip()

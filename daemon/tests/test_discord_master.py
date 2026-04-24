@@ -349,3 +349,59 @@ def test_thread_list_mention_uses_discord_wide_alias(monkeypatch):
     assert out["ok"] is True
     assert out["threads"][0]["mention"] == "<@1477047646769254643>"
     assert out["threads"][0]["mention_source"] == "alias:pg"
+
+
+def test_thread_rename_action(monkeypatch):
+    svc = _service()
+
+    def fake_request(method, path, data=None):
+        assert method == "PATCH"
+        assert path == "/channels/abc"
+        assert data == {"name": "qmd-migration-init"}
+        return {"id": "abc", "name": "qmd-migration-init", "parent_id": "p1"}
+
+    monkeypatch.setattr(DiscordMasterService, "_request_json", lambda self, method, path, data=None: fake_request(method, path, data))
+    env = create_envelope(
+        from_="mini1",
+        to="turq",
+        ch="command",
+        action="discord.thread.rename",
+        text=json.dumps({"thread_id": "abc", "new_name": "qmd-migration-init"}),
+    )
+
+    out = svc.execute(env)
+    assert out["ok"] is True
+    assert out["thread"]["id"] == "abc"
+    assert out["thread"]["name"] == "qmd-migration-init"
+
+
+def test_thread_create_action_text_parent(monkeypatch):
+    svc = _service(default_hive_channel_id="1490207637101613076")
+
+    calls = []
+
+    def fake_request(method, path, data=None):
+        calls.append((method, path, data))
+        if method == "GET" and path == "/channels/1490207637101613076":
+            return {"id": "1490207637101613076", "type": 0}
+        if method == "POST" and path == "/channels/1490207637101613076/messages":
+            assert "<@123>" in (data or {}).get("content", "")
+            return {"id": "m123"}
+        if method == "POST" and path == "/channels/1490207637101613076/messages/m123/threads":
+            assert data == {"name": "qmd-migration-init"}
+            return {"id": "t123", "name": "qmd-migration-init", "parent_id": "1490207637101613076"}
+        raise AssertionError((method, path, data))
+
+    monkeypatch.setattr(DiscordMasterService, "_request_json", lambda self, method, path, data=None: fake_request(method, path, data))
+    env = create_envelope(
+        from_="mini1",
+        to="turq",
+        ch="command",
+        action="discord.thread.create",
+        text=json.dumps({"name": "qmd-migration-init", "content": "kickoff", "mention_targets": ["user:123"]}),
+    )
+
+    out = svc.execute(env)
+    assert out["ok"] is True
+    assert out["thread"]["id"] == "t123"
+    assert out["thread"]["name"] == "qmd-migration-init"
